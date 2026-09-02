@@ -2,7 +2,14 @@
 
 trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
 
-MNTPATH="/tmp/img-backup-mnt"
+if [ -f /etc/openmediavault/config.xml ]; then
+  IS_OMV=true
+else
+  IS_OMV=false
+fi
+
+MY_TMP="${TMPDIR:-/tmp}"
+MNTPATH="${MY_TMP}/img-backup-mnt"
 
 ONEMB=$((1024 * 1024))
 
@@ -84,12 +91,12 @@ fsckerr()
 
 usage()
 {
-  errexit "Usage: $0 [options] [pathto/imagefile for incremental backup]\n\
--h,--help       This usage description\n\
--i,--initial    pathto/filename of image file [,inital size MB [,added space for incremental MB]]\n\
--n,--noexpand   Do not expand filesystem on first run after restore\n\
--o,--options    Additional rsync options (comma separated)\n\
--u,--ubuntu     Ubuntu (Deprecated)\n\
+  errexit "Usage: $0 [options] [pathto/imagefile for incremental backup]
+-h,--help       This usage description
+-i,--initial    pathto/filename of image file [,inital size MB [,added space for incremental MB]]
+-n,--noexpand   Do not expand filesystem on first run after restore
+-o,--options    Additional rsync options (comma separated)
+-u,--ubuntu     Ubuntu (Deprecated)
 -x,--extract    Extract image from NOOBS (force BOOT partition to -01 / ROOT partition to -02)"
 }
 
@@ -97,9 +104,13 @@ backup()
 {
   mntimg
   sync
+  OMV_EXCLUDE=()
+  if [ "${IS_OMV}" = true ]; then
+    OMV_EXCLUDE+=(--exclude '/srv')
+  fi
   rsync -aDH --partial --numeric-ids --delete --force --exclude "${MNTPATH}" --exclude '/dev' --exclude '/lost+found' --exclude '/media' --exclude '/mnt' \
 --exclude '/proc' --exclude '/run' --exclude '/sys' --exclude '/tmp' --exclude '/var/swap' --exclude '/etc/udev/rules.d/70-persistent-net.rules' \
---exclude '/var/lib/asterisk/astdb.sqlite3-journal' "${OPTIONS[@]}" / "${MNTPATH}/"
+--exclude '/var/lib/asterisk/astdb.sqlite3-journal' "${OMV_EXCLUDE[@]}" "${OPTIONS[@]}" / "${MNTPATH}/"
   if [[ $? -ne 0 && $? -ne 24 ]]; then
     errexit "Unable to create backup"
   fi
@@ -305,8 +316,8 @@ done
 if [ "${IMGFILE}" = "" ]; then
   if [ "${IMGNAME}" != "" ]; then
     IMGFILE="${IMGNAME}"
-    if [[ ! "${IMGFILE}" =~ ^/mnt/.*$ && ! "${IMGFILE}" =~ ^/media/.*$ ]]; then
-      errexit "${IMGFILE} does not begin with /mnt/ or /media/"
+    if [[ "$IS_OMV" = true && ! "${IMGFILE}" =~ ^/mnt/.*$ && ! "${IMGFILE}" =~ ^/media/.*$ && ! "${IMGFILE}" =~ ^/srv/.*$ ]] || [[ "$IS_OMV" = false && ! "${IMGFILE}" =~ ^/mnt/.*$ && ! "${IMGFILE}" =~ ^/media/.*$ ]]; then
+      if [ "$IS_OMV" = true ]; then errexit "${IMGFILE} does not begin with /mnt/, /media/ or /srv/"; else errexit "${IMGFILE} does not begin with /mnt/ or /media/"; fi
     fi
     if [ -d "${IMGFILE}" ]; then
       errexit "${IMGFILE} is a directory"
@@ -326,9 +337,9 @@ if [ "${IMGFILE}" = "" ]; then
       read -r -e -i "${IMGFILE}" -p "Image file to create? " IMGFILE
       if [ "${IMGFILE}" = "" ]; then
         continue
-      elif [[ ! "${IMGFILE}" =~ ^/mnt/.*$ && ! "${IMGFILE}" =~ ^/media/.*$ ]]; then
+      elif [[ "$IS_OMV" = true && ! "${IMGFILE}" =~ ^/mnt/.*$ && ! "${IMGFILE}" =~ ^/media/.*$ && ! "${IMGFILE}" =~ ^/srv/.*$ ]] || [[ "$IS_OMV" = false && ! "${IMGFILE}" =~ ^/mnt/.*$ && ! "${IMGFILE}" =~ ^/media/.*$ ]]; then
         echo ""
-        echo "${IMGFILE} does not begin with /mnt/ or /media/"
+        if [ "$IS_OMV" = true ]; then echo "${IMGFILE} does not begin with /mnt/, /media/ or /srv/"; else echo "${IMGFILE} does not begin with /mnt/ or /media/"; fi
         continue
       fi
       if [ -d "${IMGFILE}" ]; then
@@ -513,13 +524,17 @@ EOF
     touch -r "${DIR}" "${MNTPATH}${DIR}"
   done <<< "$(echo "$(rsync -aDH --dry-run --itemize-changes --partial --numeric-ids --delete --force --exclude "${MNTPATH}" --exclude '/dev' \
 --exclude '/lost+found' --exclude '/media' --exclude '/mnt' --exclude '/proc' --exclude '/run' --exclude '/sys' --exclude '/tmp' --exclude '/var/swap' \
---exclude '/etc/udev/rules.d/70-persistent-net.rules' --exclude '/var/lib/asterisk/astdb.sqlite3-journal' "${OPTIONS[@]}" / "${MNTPATH}/")" | \
+--exclude '/etc/udev/rules.d/70-persistent-net.rules' --exclude '/var/lib/asterisk/astdb.sqlite3-journal' "${OMV_EXCLUDE[@]}" "${OPTIONS[@]}" / "${MNTPATH}/")" | \
 sed -n "s|^\.d\.\.t\.\.\.\.\.\.\s\+\(.*$\)|/\1|p")"
   umntimg
   echo ""
 else
-  if [[ ! "${IMGFILE}" =~ ^/mnt/.*$ && ! "${IMGFILE}" =~ ^/media/.*$ ]]; then
-    errexit "${IMGFILE} does not begin with /mnt/ or /media/"
+  if [[ "$IS_OMV" = true && ! "${IMGFILE}" =~ ^/mnt/.*$ && ! "${IMGFILE}" =~ ^/media/.*$ && ! "${IMGFILE}" =~ ^/srv/.*$ ]] || [[ "$IS_OMV" = false && ! "${IMGFILE}" =~ ^/mnt/.*$ && ! "${IMGFILE}" =~ ^/media/.*$ ]]; then
+    if [ "$IS_OMV" = true ]; then
+      errexit "${IMGFILE} does not begin with /mnt/, /media/ or /srv/"
+    else
+      errexit "${IMGFILE} does not begin with /mnt/ or /media/"
+    fi
   fi
   if [ -d "${IMGFILE}" ]; then
     errexit "${IMGFILE} is a directory"

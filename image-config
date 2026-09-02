@@ -2,7 +2,8 @@
 
 trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
 
-MNTPATH="/tmp/image-config-mnt"
+MY_TMP="${TMPDIR:-/tmp}"
+MNTPATH="${MY_TMP}/image-config-mnt"
 
 errexit()
 {
