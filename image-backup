@@ -104,13 +104,78 @@ backup()
 {
   mntimg
   sync
-  OMV_EXCLUDE=()
-  if [ "${IS_OMV}" = true ]; then
-    OMV_EXCLUDE+=(--exclude '/srv')
+
+  # ==========================================================================
+  # AUTOMATIC DETECTION OF EXTERNAL DEVICES, MOUNTS & SYMLINKS
+  # ==========================================================================
+  echo -e "\n\e[1;34m[*] Analyzing system structures for external storage...\e[0m"
+
+  # Determine the physical system disk for the root directory (/)
+  local ROOT_DEV_SOURCE
+  local ROOT_DEV_DISK
+  local MNT_POINT
+  local MNT_SOURCE
+  local PARENT_DISK
+  local LINK_PATH
+  local REAL_TARGET
+  local TARGET_DISK
+  local DYNAMIC_EXCLUDES=()
+  local logged_mounts=0
+  local logged_links=0
+
+  ROOT_DEV_SOURCE=$(findmnt -nvo SOURCE /)
+  ROOT_DEV_DISK=$(lsblk -sno PKNAME "${ROOT_DEV_SOURCE}" 2>/dev/null | tail -n 1)
+
+  # 1. Analyze all actual mountpoints and bind mounts
+  while read -r MNT_POINT MNT_SOURCE; do
+    if [ "$MNT_POINT" = "/" ] || [ -z "$MNT_POINT" ]; then continue; fi
+
+    PARENT_DISK=$(lsblk -sno PKNAME "$MNT_SOURCE" 2>/dev/null | tail -n 1)
+
+    # If mounted from another disk OR the mountpoint uses an OMV/standard mount directory
+    if { [ -n "$PARENT_DISK" ] && [ "$PARENT_DISK" != "$ROOT_DEV_DISK" ]; } || \
+       [[ "$MNT_POINT" =~ ^/srv(/|$) || "$MNT_POINT" =~ ^/mnt(/|$) || "$MNT_POINT" =~ ^/media(/|$) ]]; then
+
+      DYNAMIC_EXCLUDES+=(--exclude "$MNT_POINT")
+      if [ $logged_mounts -eq 0 ]; then
+        echo -e "  \e[1;33m-> Excluded mount paths (other drives/bind mounts):\e[0m"
+        logged_mounts=1
+      fi
+      echo "     - $MNT_POINT (source: $MNT_SOURCE)"
+    fi
+  done <<< "$(findmnt -lo TARGET,SOURCE)"
+
+  # 2. Scan system symlinks that point to external targets
+  while read -r LINK_PATH; do
+    [ -z "$LINK_PATH" ] && continue
+
+    REAL_TARGET=$(readlink -f "$LINK_PATH" 2>/dev/null)
+    if [ -z "$REAL_TARGET" ] || [ ! -e "$REAL_TARGET" ]; then continue; fi
+
+    TARGET_DISK=$(lsblk -sno PKNAME "$(df --output=source "$REAL_TARGET" 2>/dev/null | tail -n 1)" 2>/dev/null | tail -n 1)
+
+    if [ -n "$TARGET_DISK" ] && [ "$TARGET_DISK" != "$ROOT_DEV_DISK" ]; then
+      DYNAMIC_EXCLUDES+=(--exclude "$LINK_PATH")
+      if [ $logged_links -eq 0 ]; then
+        echo -e "  \e[1;33m-> Excluded symlinks (point to external drives):\e[0m"
+        logged_links=1
+      fi
+      echo "     - $LINK_PATH (points to: $REAL_TARGET)"
+    fi
+  done <<< "$(find / -maxdepth 3 -type l 2>/dev/null)"
+
+  if [ ${#DYNAMIC_EXCLUDES[@]} -eq 0 ]; then
+    echo -e "  \e[1;32m[✓] No external mounts or risky symlinks found.\e[0m"
+  else
+    echo -e "  \e[1;32m[✓] $((${#DYNAMIC_EXCLUDES[@]} / 2)) paths successfully excluded from the backup.\e[0m"
   fi
-  rsync -aDH --partial --numeric-ids --delete --force --exclude "${MNTPATH}" --exclude '/dev' --exclude '/lost+found' --exclude '/media' --exclude '/mnt' \
+  echo ""
+  # ==========================================================================
+
+   rsync -aDH --partial --numeric-ids --delete --force --exclude "${MNTPATH}" --exclude '/dev' --exclude '/lost+found' --exclude '/media' --exclude '/mnt' \
 --exclude '/proc' --exclude '/run' --exclude '/sys' --exclude '/tmp' --exclude '/var/swap' --exclude '/etc/udev/rules.d/70-persistent-net.rules' \
---exclude '/var/lib/asterisk/astdb.sqlite3-journal' "${OMV_EXCLUDE[@]}" "${OPTIONS[@]}" / "${MNTPATH}/"
+--exclude '/var/lib/asterisk/astdb.sqlite3-journal' "${DYNAMIC_EXCLUDES[@]}" "${OPTIONS[@]}" / "${MNTPATH}/"
+
   if [[ $? -ne 0 && $? -ne 24 ]]; then
     errexit "Unable to create backup"
   fi
@@ -524,7 +589,7 @@ EOF
     touch -r "${DIR}" "${MNTPATH}${DIR}"
   done <<< "$(echo "$(rsync -aDH --dry-run --itemize-changes --partial --numeric-ids --delete --force --exclude "${MNTPATH}" --exclude '/dev' \
 --exclude '/lost+found' --exclude '/media' --exclude '/mnt' --exclude '/proc' --exclude '/run' --exclude '/sys' --exclude '/tmp' --exclude '/var/swap' \
---exclude '/etc/udev/rules.d/70-persistent-net.rules' --exclude '/var/lib/asterisk/astdb.sqlite3-journal' "${OMV_EXCLUDE[@]}" "${OPTIONS[@]}" / "${MNTPATH}/")" | \
+--exclude '/etc/udev/rules.d/70-persistent-net.rules' --exclude '/var/lib/asterisk/astdb.sqlite3-journal' "${DYNAMIC_EXCLUDES[@]}" "${OPTIONS[@]}" / "${MNTPATH}/")" | \
 sed -n "s|^\.d\.\.t\.\.\.\.\.\.\s\+\(.*$\)|/\1|p")"
   umntimg
   echo ""
