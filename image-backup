@@ -2,14 +2,9 @@
 
 trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
 
-if [ -f /etc/openmediavault/config.xml ]; then
-  IS_OMV=true
-else
-  IS_OMV=false
-fi
-
 MY_TMP="${TMPDIR:-/tmp}"
 MNTPATH="${MY_TMP}/img-backup-mnt"
+ROOT_PART=$(findmnt -nvo SOURCE /)
 
 ONEMB=$((1024 * 1024))
 
@@ -104,37 +99,31 @@ backup()
 {
   mntimg
   sync
+  TARGET_MNT=$(findmnt -nvo TARGET "${TARGET_PART}" 2>/dev/null)
+  if [ -z "${TARGET_MNT}" ]; then
+    errexit "Unable to determine backup target mount point"
+  fi
 
   # ==========================================================================
   # AUTOMATIC DETECTION OF EXTERNAL DEVICES, MOUNTS & SYMLINKS
   # ==========================================================================
   echo -e "\n\e[1;34m[*] Analyzing system structures for external storage...\e[0m"
 
-  # Determine the physical system disk for the root directory (/)
-  local ROOT_DEV_SOURCE
-  local ROOT_DEV_DISK
   local MNT_POINT
   local MNT_SOURCE
-  local PARENT_DISK
   local LINK_PATH
   local REAL_TARGET
-  local TARGET_DISK
-  local DYNAMIC_EXCLUDES=()
+  local LINK_TARGET_PART
   local logged_mounts=0
   local logged_links=0
 
-  ROOT_DEV_SOURCE=$(findmnt -nvo SOURCE /)
-  ROOT_DEV_DISK=$(lsblk -sno PKNAME "${ROOT_DEV_SOURCE}" 2>/dev/null | tail -n 1)
+  DYNAMIC_EXCLUDES=()
 
   # 1. Analyze all actual mountpoints and bind mounts
   while read -r MNT_POINT MNT_SOURCE; do
     if [ "$MNT_POINT" = "/" ] || [ -z "$MNT_POINT" ]; then continue; fi
 
-    PARENT_DISK=$(lsblk -sno PKNAME "$MNT_SOURCE" 2>/dev/null | tail -n 1)
-
-    # If mounted from another disk OR the mountpoint uses an OMV/standard mount directory
-    if { [ -n "$PARENT_DISK" ] && [ "$PARENT_DISK" != "$ROOT_DEV_DISK" ]; } || \
-       [[ "$MNT_POINT" =~ ^/srv(/|$) || "$MNT_POINT" =~ ^/mnt(/|$) || "$MNT_POINT" =~ ^/media(/|$) ]]; then
+    if [ -n "$MNT_SOURCE" ] && [ "$MNT_SOURCE" != "${ROOT_PART}" ]; then
 
       DYNAMIC_EXCLUDES+=(--exclude "$MNT_POINT")
       if [ $logged_mounts -eq 0 ]; then
@@ -143,7 +132,7 @@ backup()
       fi
       echo "     - $MNT_POINT (source: $MNT_SOURCE)"
     fi
-  done <<< "$(findmnt -lo TARGET,SOURCE)"
+  done <<< "$(findmnt -lno TARGET,SOURCE)"
 
   # 2. Scan system symlinks that point to external targets
   while read -r LINK_PATH; do
@@ -152,9 +141,9 @@ backup()
     REAL_TARGET=$(readlink -f "$LINK_PATH" 2>/dev/null)
     if [ -z "$REAL_TARGET" ] || [ ! -e "$REAL_TARGET" ]; then continue; fi
 
-    TARGET_DISK=$(lsblk -sno PKNAME "$(df --output=source "$REAL_TARGET" 2>/dev/null | tail -n 1)" 2>/dev/null | tail -n 1)
+    LINK_TARGET_PART=$(df --output=source "$REAL_TARGET" 2>/dev/null | tail -n 1)
 
-    if [ -n "$TARGET_DISK" ] && [ "$TARGET_DISK" != "$ROOT_DEV_DISK" ]; then
+    if [ -n "$LINK_TARGET_PART" ] && [ "$LINK_TARGET_PART" != "${ROOT_PART}" ]; then
       DYNAMIC_EXCLUDES+=(--exclude "$LINK_PATH")
       if [ $logged_links -eq 0 ]; then
         echo -e "  \e[1;33m-> Excluded symlinks (point to external drives):\e[0m"
@@ -172,11 +161,12 @@ backup()
   echo ""
   # ==========================================================================
 
-   rsync -aDH --partial --numeric-ids --delete --force --exclude "${MNTPATH}" --exclude '/dev' --exclude '/lost+found' --exclude '/media' --exclude '/mnt' \
+  rsync -aDH --partial --numeric-ids --delete --force --exclude "${MNTPATH}" --exclude '/dev' --exclude '/lost+found' --exclude "${TARGET_MNT}" \
 --exclude '/proc' --exclude '/run' --exclude '/sys' --exclude '/tmp' --exclude '/var/swap' --exclude '/etc/udev/rules.d/70-persistent-net.rules' \
 --exclude '/var/lib/asterisk/astdb.sqlite3-journal' "${DYNAMIC_EXCLUDES[@]}" "${OPTIONS[@]}" / "${MNTPATH}/"
 
-  if [[ $? -ne 0 && $? -ne 24 ]]; then
+  RSYNC_STATUS=$?
+  if [ "${RSYNC_STATUS}" -ne 0 ] && [ "${RSYNC_STATUS}" -ne 24 ]; then
     errexit "Unable to create backup"
   fi
   mkdir -p "${MNTPATH}/dev/" "${MNTPATH}/lost+found/" "${MNTPATH}/media/" "${MNTPATH}/mnt/" "${MNTPATH}/proc/" "${MNTPATH}/run/" "${MNTPATH}/sys/" "${MNTPATH}/tmp/"
@@ -304,7 +294,6 @@ if [ "${BOOTMNT}" = "${MNTPATH}/boot/firmware" ]; then
 else
   BOOTSIZE=256
 fi
-ROOT_PART="$(mount | sed -n 's|^\(/dev/.*\) on / .*|\1|p')"
 ROOT_DEV_P="$(sed 's/[0-9]\+$//' <<< "${ROOT_PART}")"
 ROOT_DEV="${ROOT_DEV_P}"
 if [[ "${ROOT_DEV}" =~ ^/dev/mmcblk[0-9]p$ || "${ROOT_DEV}" =~ ^/dev/nvme[0-9]n1p$ ]]; then
@@ -325,6 +314,7 @@ IMGSIZE=""
 IMGINCR=""
 IMGFILE=""
 OPTIONS=()
+DYNAMIC_EXCLUDES=()
 EXTRACT=FALSE
 NOEXPAND=FALSE
 while [ $# -gt 0 ]; do
@@ -381,8 +371,11 @@ done
 if [ "${IMGFILE}" = "" ]; then
   if [ "${IMGNAME}" != "" ]; then
     IMGFILE="${IMGNAME}"
-    if [[ "$IS_OMV" = true && ! "${IMGFILE}" =~ ^/mnt/.*$ && ! "${IMGFILE}" =~ ^/media/.*$ && ! "${IMGFILE}" =~ ^/srv/.*$ ]] || [[ "$IS_OMV" = false && ! "${IMGFILE}" =~ ^/mnt/.*$ && ! "${IMGFILE}" =~ ^/media/.*$ ]]; then
-      if [ "$IS_OMV" = true ]; then errexit "${IMGFILE} does not begin with /mnt/, /media/ or /srv/"; else errexit "${IMGFILE} does not begin with /mnt/ or /media/"; fi
+    IMGFILE="$(readlink -f "${IMGFILE}")"
+    TARGET_DIR="$(dirname "${IMGFILE}")"
+    TARGET_PART="$(df --output=source "${TARGET_DIR}" | tail -n 1)"
+    if [ "${TARGET_PART}" = "${ROOT_PART}" ]; then
+      errexit "${IMGFILE} is on the system partition"
     fi
     if [ -d "${IMGFILE}" ]; then
       errexit "${IMGFILE} is a directory"
@@ -402,9 +395,13 @@ if [ "${IMGFILE}" = "" ]; then
       read -r -e -i "${IMGFILE}" -p "Image file to create? " IMGFILE
       if [ "${IMGFILE}" = "" ]; then
         continue
-      elif [[ "$IS_OMV" = true && ! "${IMGFILE}" =~ ^/mnt/.*$ && ! "${IMGFILE}" =~ ^/media/.*$ && ! "${IMGFILE}" =~ ^/srv/.*$ ]] || [[ "$IS_OMV" = false && ! "${IMGFILE}" =~ ^/mnt/.*$ && ! "${IMGFILE}" =~ ^/media/.*$ ]]; then
+      fi
+      IMGFILE="$(readlink -f "${IMGFILE}")"
+      TARGET_DIR="$(dirname "${IMGFILE}")"
+      TARGET_PART="$(df --output=source "${TARGET_DIR}" | tail -n 1)"
+      if [ "${TARGET_PART}" = "${ROOT_PART}" ]; then
         echo ""
-        if [ "$IS_OMV" = true ]; then echo "${IMGFILE} does not begin with /mnt/, /media/ or /srv/"; else echo "${IMGFILE} does not begin with /mnt/ or /media/"; fi
+        echo "${IMGFILE} is on the system partition"
         continue
       fi
       if [ -d "${IMGFILE}" ]; then
@@ -588,18 +585,17 @@ EOF
   do
     touch -r "${DIR}" "${MNTPATH}${DIR}"
   done <<< "$(echo "$(rsync -aDH --dry-run --itemize-changes --partial --numeric-ids --delete --force --exclude "${MNTPATH}" --exclude '/dev' \
---exclude '/lost+found' --exclude '/media' --exclude '/mnt' --exclude '/proc' --exclude '/run' --exclude '/sys' --exclude '/tmp' --exclude '/var/swap' \
+--exclude '/lost+found' --exclude "${TARGET_MNT}" --exclude '/proc' --exclude '/run' --exclude '/sys' --exclude '/tmp' --exclude '/var/swap' \
 --exclude '/etc/udev/rules.d/70-persistent-net.rules' --exclude '/var/lib/asterisk/astdb.sqlite3-journal' "${DYNAMIC_EXCLUDES[@]}" "${OPTIONS[@]}" / "${MNTPATH}/")" | \
 sed -n "s|^\.d\.\.t\.\.\.\.\.\.\s\+\(.*$\)|/\1|p")"
   umntimg
   echo ""
 else
-  if [[ "$IS_OMV" = true && ! "${IMGFILE}" =~ ^/mnt/.*$ && ! "${IMGFILE}" =~ ^/media/.*$ && ! "${IMGFILE}" =~ ^/srv/.*$ ]] || [[ "$IS_OMV" = false && ! "${IMGFILE}" =~ ^/mnt/.*$ && ! "${IMGFILE}" =~ ^/media/.*$ ]]; then
-    if [ "$IS_OMV" = true ]; then
-      errexit "${IMGFILE} does not begin with /mnt/, /media/ or /srv/"
-    else
-      errexit "${IMGFILE} does not begin with /mnt/ or /media/"
-    fi
+  IMGFILE="$(readlink -f "${IMGFILE}")"
+  TARGET_DIR="$(dirname "${IMGFILE}")"
+  TARGET_PART="$(df --output=source "${TARGET_DIR}" | tail -n 1)"
+  if [ "${TARGET_PART}" = "${ROOT_PART}" ]; then
+    errexit "${IMGFILE} is on the system partition"
   fi
   if [ -d "${IMGFILE}" ]; then
     errexit "${IMGFILE} is a directory"
