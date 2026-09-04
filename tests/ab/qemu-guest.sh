@@ -20,7 +20,7 @@ qemu-img create -f qcow2 -F raw -b "${BASE_IMAGE}" "${ROOT_OVERLAY}" >/dev/null
 qemu-img create -f raw "${BACKUP_DISK}" "${DISK_GB}G" >/dev/null
 
 exec qemu-system-aarch64 \
-  -M "${MACHINE}" -cpu cortex-a72 -m "${MEMORY_MB}" -smp "${CPUS}" \
+  -M "${MACHINE}" -cpu max,pauth=off -m "${MEMORY_MB}" -smp "${CPUS}" \
   -kernel "${KERNEL_IMAGE}" -initrd "${INITRAMFS_IMAGE}" -append 'root=/dev/vda2 rw rootwait console=ttyAMA0' \
   -drive "if=none,file=${ROOT_OVERLAY},format=qcow2,id=rootdisk" -device virtio-blk-pci,drive=rootdisk \
   -drive "if=none,file=${BACKUP_DISK},format=raw,id=backupdisk" -device virtio-blk-pci,drive=backupdisk \

@@ -10,7 +10,7 @@ errexit()
 
 usage()
 {
-  errexit "Usage: $0 imagefile [W95|Linux]"
+  errexit "Usage: $0 [--non-interactive] imagefile [W95|Linux]"
 }
 
 if [ $(id -u) -ne 0 ]; then
@@ -22,6 +22,11 @@ for PID in $(pidof -x -o %PPID "${PGMNAME}"); do
     errexit "${PGMNAME} is already running"
   fi
 done
+NON_INTERACTIVE=FALSE
+if [ "${1}" = "--non-interactive" ]; then
+  NON_INTERACTIVE=TRUE
+  shift
+fi
 IMGFILE="$1"
 PART="$2"
 if [ "${IMGFILE}" = "" ]; then
@@ -42,31 +47,41 @@ else
     usage
   fi
 fi
-echo ""
-echo -n "Check ${IMGFILE} (y/n)? "
-while read -r -n 1 -s answer; do
-  if [[ "${answer}" = [yYnN] ]]; then
-    echo "${answer}"
-    if [[ "${answer}" = [yY] ]]; then
-      break
-    else
-      errexit "Aborted"
+if [ "${NON_INTERACTIVE}" = "FALSE" ]; then
+  echo ""
+  echo -n "Check ${IMGFILE} (y/n)? "
+  while read -r -n 1 -s answer; do
+    if [[ "${answer}" = [yYnN] ]]; then
+      echo "${answer}"
+      if [[ "${answer}" = [yY] ]]; then
+        break
+      else
+        errexit "Aborted"
+      fi
     fi
-  fi
-done
-echo ""
+  done
+  echo ""
+fi
 LOOP="$(losetup -f --show -P "${IMGFILE}")"
 if [ $? -ne 0 ]; then
   errexit "Unable to create loop device"
 fi
 FS_TYPE=$(blkid "${LOOP}p${PART}" | sed -n 's|^.*TYPE="\(\S\+\)".*|\1|p')
 if [ "${PART}" = "1" ]; then
-  dosfsck "${LOOP}p${PART}"
+  if [ "${NON_INTERACTIVE}" = "TRUE" ]; then
+    dosfsck -n "${LOOP}p${PART}"
+  else
+    dosfsck "${LOOP}p${PART}"
+  fi
 else
   if [ "${FS_TYPE}" = "f2fs" ]; then
     fsck.f2fs "${LOOP}p${PART}"
   else
-    fsck.ext4 -f "${LOOP}p${PART}"
+    if [ "${NON_INTERACTIVE}" = "TRUE" ]; then
+      fsck.ext4 -f -n "${LOOP}p${PART}"
+    else
+      fsck.ext4 -f "${LOOP}p${PART}"
+    fi
   fi
 fi
 if [ $? -ne 0 ]; then
