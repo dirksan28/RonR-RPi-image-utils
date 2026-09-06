@@ -157,12 +157,12 @@ Instead of relying on hardcoded paths like `/media` or `/mnt`, this version dyna
 * **Symlink Resolution:** It scans the filesystem depth (`find / -maxdepth 3 -type l`) to catch and intercept symlinks leading to foreign partitions, closing a major loophole where external drives could be accidentally pulled into the image.
 * **Target Isolation:** The specific mount point where the backup image is being written (`${TARGET_MNT}`) is explicitly protected and excluded, ensuring the script never attempts to backup the image into itself.
 
-### 2. Enterprise-Grade Image Sanitization
+### 2. Automated Image Cleanup & Boot Integrity
 Backups should only contain persistent data, not temporary system noise. This fork enforces strict runtime cleanup:
 * **Volatile Data Exclusion:** It automatically blocks `/var/tmp` and volatile `systemd-private-*` directories during both the initial and incremental `rsync` passes, resulting in smaller, significantly cleaner images.
 * **Explicit Boot Mapping:** Because dynamic exclusions treat `/boot/firmware` as a foreign mount point, this fork implements a dedicated, explicit copy routine for the boot partition to guarantee the generated `.img` remains 100% bootable.
 
-#### 3. Automated A/B Test Harness (Zero-Regression Policy)
+### 3. Advanced A/B Test Harness (Zero-Regression Policy)
 Modifying a critical backup utility requires absolute mathematical certainty that no existing features are broken. This fork is validated by a robust test architecture:
 * **Upstream A/B Verification:** The suite allows manual execution of an automated A/B comparison against the pinned upstream repository standard [seamusdemora/RonR-RPi-image-utils.git](https://github.com/seamusdemora/RonR-RPi-image-utils.git).
 * **Hardware-Free Testing:** Due to the comprehensive nature of the verification, a full test run takes between 1 and 2 hours. However, because it runs entirely via local emulation, developers completely bypass the need to perform slow, wear-intensive initial and regression cycles on physical Raspberry Pi hardware and SD cards.
