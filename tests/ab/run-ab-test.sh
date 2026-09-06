@@ -7,7 +7,12 @@ CONFIG_FILE="${AB_CONFIG:-${SCRIPT_DIR}/config.env}"
 ACTION="${1:-}"
 
 log_message() {
-  printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
+  local msg="[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] $*"
+  printf '%s\n' "${msg}"
+  # Also write to result.log in the artifact directory (if it exists)
+  if [ -n "${LOCAL_ARTIFACT_DIR:-}" ] && [ -d "${LOCAL_ARTIFACT_DIR}" ]; then
+    printf '%s\n' "${msg}" >> "${LOCAL_ARTIFACT_DIR}/result.log"
+  fi
 }
 
 usage() {
@@ -72,11 +77,13 @@ finish_run() {
       prepare|preflight|initial) log_message "[PASS] ${ACTION} completed successfully" ;;
       *) log_message "[PASS] Test command completed successfully" ;;
     esac
+    log_message "[INFO] Success Exitcode: ${exit_code}"
   else
     log_message "[FAIL] ${ACTION} aborted (exit ${exit_code})" >&2
     [ -n "${CURRENT_CANDIDATE}" ] && log_message "[FAIL] candidate: ${CURRENT_CANDIDATE}" >&2
     [ -n "${CURRENT_PHASE}" ] && log_message "[FAIL] phase: ${CURRENT_PHASE}" >&2
     log_message "[FAIL] stage: ${CURRENT_STAGE}" >&2
+    log_message "[INFO] Fail Exitcode: ${exit_code}"
   fi
   log_message "[INFO] A/B artifacts: ${LOCAL_ARTIFACT_DIR}"
   exit "${exit_code}"

@@ -162,7 +162,7 @@ backup()
   # ==========================================================================
 
   rsync -aDH --partial --numeric-ids --delete --force --exclude "${MNTPATH}" --exclude '/dev' --exclude '/lost+found' --exclude "${TARGET_MNT}" \
---exclude '/proc' --exclude '/run' --exclude '/sys' --exclude '/tmp' --exclude '/var/swap' --exclude '/etc/udev/rules.d/70-persistent-net.rules' \
+--exclude '/proc' --exclude '/run' --exclude '/sys' --exclude '/tmp' --exclude '/var/tmp' --exclude '/var/swap' --exclude '/etc/udev/rules.d/70-persistent-net.rules' \
 --exclude '/var/lib/asterisk/astdb.sqlite3-journal' "${DYNAMIC_EXCLUDES[@]}" "${OPTIONS[@]}" / "${MNTPATH}/"
 
   RSYNC_STATUS=$?
@@ -174,6 +174,19 @@ backup()
     errexit "Unable to create image directories"
   fi
   chmod a+rwxt "${MNTPATH}/tmp/"
+
+  # Copy boot partition contents from source system
+  SOURCE_BOOT_MNT=$(sed -n '/^[[:space:]]*#/!s|^\S\+\s\+\(/boot\S*\)\s\+.*$|\1|p' /etc/fstab)
+  if [ -n "${SOURCE_BOOT_MNT}" ] && [ -d "${SOURCE_BOOT_MNT}" ]; then
+    echo -e "\n\e[1;34m[*] Copying boot partition contents...\e[0m"
+    rsync -aDH --partial --numeric-ids --delete --force "${SOURCE_BOOT_MNT}/" "${BOOTMNT}/"
+    if [ $? -ne 0 ]; then
+      errexit "Unable to copy boot partition"
+    fi
+  else
+    echo -e "\n\e[1;33m[!] Source boot partition not found at ${SOURCE_BOOT_MNT}, skipping boot copy\e[0m"
+  fi
+
   if [ "${EXTRACT}" = "TRUE" ]; then
     sed -i "/^[[:space:]]*#/!s|^\(.*root=\)\S\+\(\s\+.*\)$|\1PARTUUID=${PTUUID}-02\2|" "${BOOTMNT}/cmdline.txt"
     sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/boot\S*\s\+vfat\s\+.*\)$|PARTUUID=${PTUUID}-01\1|" "${MNTPATH}/etc/fstab"
@@ -585,7 +598,7 @@ EOF
   do
     touch -r "${DIR}" "${MNTPATH}${DIR}"
   done <<< "$(echo "$(rsync -aDH --dry-run --itemize-changes --partial --numeric-ids --delete --force --exclude "${MNTPATH}" --exclude '/dev' \
---exclude '/lost+found' --exclude "${TARGET_MNT}" --exclude '/proc' --exclude '/run' --exclude '/sys' --exclude '/tmp' --exclude '/var/swap' \
+--exclude '/lost+found' --exclude "${TARGET_MNT}" --exclude '/proc' --exclude '/run' --exclude '/sys' --exclude '/tmp' --exclude '/var/tmp' --exclude '/var/swap' \
 --exclude '/etc/udev/rules.d/70-persistent-net.rules' --exclude '/var/lib/asterisk/astdb.sqlite3-journal' "${DYNAMIC_EXCLUDES[@]}" "${OPTIONS[@]}" / "${MNTPATH}/")" | \
 sed -n "s|^\.d\.\.t\.\.\.\.\.\.\s\+\(.*$\)|/\1|p")"
   umntimg

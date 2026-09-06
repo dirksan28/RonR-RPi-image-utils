@@ -26,7 +26,7 @@ The host must provide `qemu-system-aarch64`, `qemu-img`, `virt-customize`, `gues
 All commands below are run from this directory:
 
 ```text
-/home/schm/vspython/RonR-RPi-image-utils/tests/ab
+RonR-RPi-image-utils/tests/ab
 ```
 
 ### 1. Create the local configuration
@@ -90,11 +90,13 @@ Use `cleanall` only when you also want to delete all saved test results:
 ./run-ab-test.sh cleanall
 ```
 
-## Updating Images and Kernels (Maintenance)
+## Maintenance
+
+### Updating Images and Kernels
 
 The test harness pairs a specific Raspberry Pi OS userspace image with a matching generic Debian ARM64 kernel to allow stable emulation on QEMU's `virt` machine. When you need to upgrade components or test a different OS release in the future, follow these steps to locate and pin the correct artifacts.
 
-### 1. Find a New Raspberry Pi OS Image
+#### 1. Find a New Raspberry Pi OS Image
 The harness requires the **64-bit Lite version** of Raspberry Pi OS. 
 
 1. Browse the official release directory: [://raspberrypi.com](https://://raspberrypi.com)
@@ -104,7 +106,7 @@ The harness requires the **64-bit Lite version** of Raspberry Pi OS.
 
 *Note: Always use specific, dated release URLs. Never use `latest` links, as they break reproducibility and checksum verification.*
 
-### 2. Find a Matching Debian Kernel
+#### 2. Find a Matching Debian Kernel
 The Raspberry Pi kernel inside the base image is stripped of QEMU drivers and will not boot. You must supply a generic Debian ARM64 kernel that matches the Debian codename branch of your chosen Raspberry Pi OS:
 * Raspberry Pi OS **Bookworm** is based on Debian 12 (use `deb12` packages)
 * Raspberry Pi OS **Trixie** is based on Debian 13 (use `deb13` packages)
@@ -120,7 +122,7 @@ To ensure the exact kernel package remains permanently available even after bein
 5. Copy the download link for `KERNEL_DEB_URL`.
 6. Copy the SHA-256 hash displayed right next to the file entry for `KERNEL_DEB_SHA256`.
 
-### 3. Update `config.env`
+#### 3. Update `config.env`
 Open your `config.env` file and update the configuration keys. It is best practice to version-tag the generated filenames so that old and new test environments can coexist within your cache directory without conflicts:
 
 ```bash
@@ -141,7 +143,7 @@ KERNEL_IMAGE="\${PREPARED_CACHE_DIR}/Image-6.12.38-1"
 INITRAMFS_IMAGE="\${PREPARED_CACHE_DIR}/initrd-6.12.38-1.img"
 ```
 
-### 4. Rebuild the Cache
+#### 4. Rebuild the Cache
 Once the new values are saved, force the harness to discard the outdated guest state and compile the new environment from your updated inputs:
 
 ```bash
@@ -153,6 +155,18 @@ Once the new values are saved, force the harness to discard the outdated guest s
 ```
 The script automatically evaluates the new SHA-256 hashes. It will bypass large downloads if the file matching the URL and checksum is already present in your `cache/` directory, while cleanly building the updated target images.
 
+### Agentic Support
+
+Two documentation files in this directory support AI-assisted maintenance and continuation:
+
+| File | Purpose | Audience | Lifecycle |
+|------|---------|----------|-----------|
+| `plan-qemuImageBackupAbTest.prompt.md` | Design specification for the test harness | Someone understanding/extending the test architecture | Relatively static (test design) |
+| `HANDOVER.md` | Continuation guide for the fix work | Someone picking up the fix work on another machine | Evolves with each session |
+
+**Content focus:**
+- `plan-qemuImageBackupAbTest.prompt.md` — "What the test does and why" (fixtures, QEMU setup, manifest generation, comparison logic)
+- `HANDOVER.md` — "What was broken, what's fixed, how to resume" (boot copy fix, var/tmp exclusion, runtime normalization patterns, passing artifacts)
 
 ## Theory of Operation
 
@@ -197,6 +211,67 @@ For each candidate, the harness records:
 - regular-file checksums
 
 The comparison does not require the raw `.img` files to be byte-identical. It compares the normalized manifests and filtered partition metadata. A comparison passes when both expected manifests match and the intentional behavior difference is correct: the upstream result may contain the external bind-mount fixture, while the local result must exclude it and report the dynamic exclusion. The initial and incremental image checks must also complete successfully.
+
+### Comparison and Normalization (`compare-results.sh`)
+
+The `compare-results.sh` script performs the final comparison between upstream and local results. It is invoked by `run-ab-test.sh` after both candidates complete, but can also be run manually on existing artifact directories:
+
+```bash
+./compare-results.sh artifacts/testresultXXXXXXXXXXXXXX/upstream/initial artifacts/testresultXXXXXXXXXXXXXX/local/initial
+./compare-results.sh artifacts/testresultXXXXXXXXXXXXXX/upstream/incremental artifacts/testresultXXXXXXXXXXXXXX/local/incremental
+```
+
+#### Manifest Format
+
+Each candidate produces `boot.manifest` and `root.manifest` files. These are tabular text files with one line per filesystem entry:
+
+```
+path    type    perms    owner    group    size    target    hash
+```
+
+- **path**: absolute path from filesystem root (e.g., `etc/passwd`, `boot/firmware/start4.elf`)
+- **type**: `regular file`, `directory`, `symbolic link`, etc.
+- **perms**: octal permissions (e.g., `644`, `755`)
+- **owner/group**: user and group names
+- **size**: file size in bytes (for directories, block size)
+- **target**: symlink target (empty for non-symlinks)
+- **hash**: SHA-256 checksum (empty for non-regular files)
+
+#### Normalization Process
+
+Before comparing, both manifests are normalized to filter out differences that are **expected runtime variations** between separate QEMU boots. The normalization happens in `normalize_manifest()`:
+
+1. **Test fixture exclusion**: Removes entries under `opt/image-backup-ab-fixtures/bind-target/` and `opt/image-backup-ab-fixtures/external-link` (these are intentional test artifacts that differ by design).
+2. **Runtime exclusion**: Filters lines matching `RUNTIME_EXCLUDE_PATTERNS` (see below).
+
+The filtered manifests are then compared with `diff -u`. A pass means zero diff output.
+
+#### `RUNTIME_EXCLUDE_PATTERNS` — Purpose and Categories
+
+Each QEMU guest boots fresh, so system state naturally differs between runs. These patterns exclude paths that represent **runtime state**, not functional differences in the backup script. Patterns match the path at the start of a manifest line followed by whitespace.
+
+| Category | Examples | Reason |
+|----------|----------|--------|
+| **Machine identity** | `etc/machine-id`, `var/lib/systemd/random-seed` | Generated uniquely on first boot |
+| **Boot firmware symlinks** | `boot/issue.txt`, `boot/overlays` | Point to `firmware/`; presence varies by kernel/initramfs |
+| **Systemd state** | `var/lib/systemd/*`, `var/log/journal/` | Timestamps, journal cursors, coredump state |
+| **Logs** | `var/log/*`, `var/log/apt/`, `var/log/dpkg.log` | Rotated, appended, or created per boot |
+| **Package manager state** | `var/lib/apt/*`, `var/lib/dpkg/info/` | Cache, lists, extended states change on APT runs |
+| **NetworkManager** | `var/lib/NetworkManager/*` | Lease files, timestamps, connection state |
+| **Cloud-init** | `var/lib/cloud/*` | Instance data, semaphores, boot-stage markers |
+| **Directory sizes** | `usr/bin`, `usr/lib/aarch64-linux-gnu`, `usr/share/man/man*`, `etc/ssl/certs`, kernel headers under `usr/src/` | Block allocation varies with file creation order |
+| **Runtime symlinks** | `var/lock`, `var/run` | Point to `/run/lock`, `/run`; may be directories or symlinks |
+| **Temp files** | `var/tmp/systemd-private-*` | Private systemd directories created per boot |
+
+#### Extending Patterns in the Future
+
+If a new test run fails with diffs that are **runtime artifacts** (not functional bugs), add patterns to `RUNTIME_EXCLUDE_PATTERNS` in `compare-results.sh`:
+
+1. Identify the differing path from the diff output.
+2. Add a pattern matching the path prefix followed by `[[:space:]]` (e.g., `'^var/lib/new-runtime-path[[:space:]]'`).
+3. Re-run `compare-results.sh` on the same artifacts to verify the diff disappears.
+
+**Do not** add patterns for functional differences (e.g., missing boot firmware files, missing `/var/tmp` exclusion) — those indicate bugs in `image-backup` that should be fixed in the script itself.
 
 A test fails when a candidate cannot boot or be reached over SSH, a backup phase exits unsuccessfully, an expected image or manifest is missing, an image filesystem check fails, normalized content differs unexpectedly, the local candidate copies excluded external content, or the local candidate fails to report its dynamic exclusions. The overall command returns exit code `0` only when both initial and incremental comparisons pass.
 
@@ -249,6 +324,7 @@ tests/ab/artifacts/testresult<UTC timestamp>/
 Useful files include:
 
 ```text
+result.log                    # Complete run log with all [INFO]/[PASS]/[FAIL] messages
 upstream/qemu-console.log
 upstream/initial/image-backup.log
 upstream/initial/image-check.txt
@@ -264,6 +340,8 @@ initial-comparison.log
 incremental-comparison.log
 ```
 
+The `result.log` file contains a complete chronological record of all tagged messages (`[INFO]`, `[PASS]`, `[FAIL]`) emitted during the run. This allows quick determination of test success/failure without parsing terminal output.
+
 `inspect-image.sh` inspects the generated image read-only. It pre-calculates regular-file SHA-256 hashes in parallel, then reads the remaining metadata with native `find -printf` formatting instead of spawning `stat` for every entry. It emits timestamped progress messages reporting entries processed, regular files hashed, throughput, and elapsed time. Progress is reported every 5,000 entries by default and at least every 30 seconds; set `INSPECT_PROGRESS_ENTRIES` or `INSPECT_PROGRESS_INTERVAL` in the guest environment to adjust these thresholds. Each phase stores the combined inspection output in `inspect-image.log` and its exit code in `inspect-image.status`. The generated `root.manifest` and `boot.manifest` format is unchanged.
 
 A successful run ends with output similar to:
@@ -272,6 +350,7 @@ A successful run ends with output similar to:
 [2026-09-04T10:15:01Z] [PASS] initial comparison
 [2026-09-04T10:22:44Z] [PASS] incremental comparison
 [2026-09-04T10:42:45Z] [PASS] A/B test completed successfully
+[2026-09-04T10:42:45Z] [INFO] Success Exitcode: 0
 [2026-09-04T10:42:45Z] [INFO] A/B artifacts: /home/.../tests/ab/artifacts/testresult<UTC timestamp>
 ```
 
@@ -282,6 +361,7 @@ A failed run ends with a visible diagnostic, for example:
 [2026-09-04T10:05:12Z] [FAIL] candidate: upstream
 [2026-09-04T10:05:12Z] [FAIL] phase: initial
 [2026-09-04T10:05:12Z] [FAIL] stage: running upstream initial backup
+[2026-09-04T10:05:12Z] [INFO] Fail Exitcode: 1
 [2026-09-04T10:05:12Z] [INFO] A/B artifacts: /home/.../tests/ab/artifacts/testresult<UTC timestamp>
 ```
 
@@ -289,7 +369,7 @@ The final `poweroff` messages from systemd only mean that a guest was shut down.
 
 ## Runtime Expectations
 
-The `all` flow can take a considerable amount of time (10-12h). QEMU is emulating an ARM64 Raspberry Pi OS environment, and the harness performs two complete backup sequences, then checks both generated images and compares their contents. The first boot can take several minutes, and the backup/check phases can take considerably longer depending on disk speed and host load.
+The `all` flow can take a considerable amount of time (~1–2 hours, depending on your local machine). QEMU emulates an ARM64 Raspberry Pi OS environment, and the harness performs two complete backup sequences, then checks both generated images and compares their contents. The first boot can take several minutes, and the backup and check phases can take considerably longer depending on disk speed and host load.
 
 Do not stop the script merely because the console appears quiet or remains at the serial login prompt. The harness waits for SSH in the background and prints progress every 30 seconds. Stop it only after the configured timeout, an explicit error, or a confirmed hang.
 
