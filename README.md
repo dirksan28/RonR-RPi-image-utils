@@ -170,7 +170,7 @@ Modifying a critical backup utility requires absolute mathematical certainty tha
 * **Differential Manifest Analysis:** The test harness automatically mounts, normalizes, and compares the resulting partition tables, boot manifests, and root filesystems between the two environments to detect any unintended behavior changes (missing files, wrong permissions, dropped boot contents).
 * **Deterministic Results:** By utilizing state-filtering (`RUNTIME_EXCLUDE_PATTERNS`) to strip out per-boot machine noise (like IDs and temporary logs), the harness ensures that passing the test means the local image is functionally identical to the upstream standard, carrying only the intentional OMV and safety enhancements.
 
-For detailed information and the test harness source code, please refer to the [test documentation](test/README.md).
+For detailed information and the test harness source code, please refer to the [test documentation](tests/ab/README.md).
 
 <!--- 
 You can hide shit in here  :)   LOL 
