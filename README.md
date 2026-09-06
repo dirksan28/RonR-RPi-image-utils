@@ -123,6 +123,44 @@ In other words, simply add the URL of the .img file you wish to update to the ba
 This concludes the README.md file. Once again, any and all questions re `image-utils` should be submitted to [RonR's forum page](https://forums.raspberrypi.com/viewtopic.php?t=332000).
 
 ---
+## This Version's Benefits
+
+This fork's `image-backup` adds several improvements and safeguards over the upstream version.
+
+| Benefit | Upstream | Local |
+|---------|----------|-------|
+| External drive / bind-mount exclusion | Hardcoded `/media` and `/mnt` only | Automatic: scans all mount points via `findmnt` and excludes any whose source is not the root partition |
+| Symlink-to-external-drive exclusion | None | Scans symlinks (`find / -maxdepth 3 -type l`) and excludes those resolving to another partition |
+| Backup-target protection | None (relies on `/media`/`/mnt`) | Excludes `${TARGET_MNT}`, the mount point where the image file is written |
+| `/var/tmp` exclusion | Not excluded | Excluded in both the initial and incremental rsync (no `systemd-private-*` runtime dirs) |
+| Boot partition copy | Implicit (rsync descends into the mounted boot partition) | Explicit rsync of the boot partition contents, required because the dynamic exclusion would otherwise skip it |
+| Configurable temp directory | Hardcoded `/tmp` | `MY_TMP="${TMPDIR:-/tmp}"` — set `TMPDIR` to relocate the temporary mount point used during backup |
+| Automated A/B test harness | None | Pinned upstream revision vs. local version booted in disposable QEMU guests; validates compatibility using normalized manifests |
+
+### Why this matters
+
+- **No accidental inclusion of other drives**: upstream only skips `/media` and `/mnt`. A drive mounted at `/data`, `/home/...`, or `/srv` (OpenMediaVault) would be backed up by upstream, potentially producing a huge image or recursing into the backup target.
+- **Cleaner images**: `/var/tmp` runtime directories are excluded, so images contain only real data.
+- **Boot partition preserved**: the explicit boot copy keeps the image bootable even though the dynamic exclusion treats `/boot/firmware` as a foreign mount point.
+- **Works on RAM-disk-heavy systems (OpenMediaVault)**: upstream hardcodes its temporary mount point under `/tmp`. On systems where `/tmp` is a RAM disk — OpenMediaVault uses one heavily — a full backup can exhaust RAM and abort with *"no space left on device"*. The local version reads the `TMPDIR` environment variable, so you can point it at a directory on an external drive and avoid the RAM-disk limit entirely, e.g.:
+
+  ```bash
+  TMPDIR=/mnt/backup/tmp sudo image-backup ...
+  ```
+
+### A/B test harness — safe, upstream-compatible changes
+
+The test harness is not just a pass/fail check — it's the safety net that makes modifying `image-backup` with confidence:
+
+* **Verifies upstream compatibility**: Every run boots the pinned upstream revision (https://github.com/seamusdemora/RonR-RPi-image-utils.git) and the local version in identical disposable QEMU guests, then compares normalized boot/root manifests and partition tables. A pass means the local image is functionally equivalent to upstream's, apart from intentional differences.
+* **Catches regressions early**: Any accidental behavior change (missing files, wrong permissions, dropped boot contents, unintended exclusions) shows up as a diff instead of silently shipping in a backup.
+* **Filters out runtime noise**: `RUNTIME_EXCLUDE_PATTERNS` normalize machine-id, logs, caches, and other per-boot state, so only *real* functional differences surface — you don't chase false positives from two fresh boots.
+* **Reproducible and disposable**: By pinning source revisions against the `seamusdemora/RonR-RPi-image-utils.git` repository, utilizing checksums, and running throwaway QEMU guests to emulate the ARM architecture locally, you can safely iterate on `image-backup` and re-run tests. You get a trustworthy environment every time—without touching a physical Pi or risking real data.
+* **Documents the intended delta**: The comparison explicitly asserts the one behavior that *should* differ — the local dynamic exclusion of external mounts — so future changes can preserve or extend it deliberately.
+
+**In short**: you can change `image-backup` with confidence, because the A/B test tells you immediately whether the result is still compatible with the upstream version.
+
+See the [test documentation](tests/ab/README.md) for details.
 
 <!--- 
 You can hide shit in here  :)   LOL 
