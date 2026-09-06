@@ -149,7 +149,7 @@ Upstream `image-backup` typically fails or corrupts on OMV due to two structural
 
 ## Advanced Architecture & Safety Guardrails
 
-To achieve this level of reliability, this fork moves away from static, hardcoded assumptions and introduces a highly defensive architecture designed for production systems.
+To achieve this level of reliability, this fork moves away from static, hardcoded assumptions and introduces a highly defensive architecture.
 
 ### 1. Dynamic Boundary Defense (No Accidental Drive Inclusion)
 Instead of relying on hardcoded paths like `/media` or `/mnt`, this version dynamically audits the operating system's filesystem layout at runtime:
@@ -163,7 +163,7 @@ Backups should only contain persistent data, not temporary system noise. This fo
 * **Explicit Boot Mapping:** Because dynamic exclusions treat `/boot/firmware` as a foreign mount point, this fork implements a dedicated, explicit copy routine for the boot partition to guarantee the generated `.img` remains 100% bootable.
 
 ### 3. Advanced A/B Test Harness (Zero-Regression Policy)
-Modifying a critical backup utility requires absolute mathematical certainty that no existing features are broken. This fork is validated by a robust test architecture:
+Modifying a critical backup utility requires absolute technical certainty that no existing features are broken. This fork is validated by a robust test architecture:
 * **Upstream A/B Verification:** The suite allows manual execution of an automated A/B comparison against the pinned upstream repository standard [seamusdemora/RonR-RPi-image-utils.git](https://github.com/seamusdemora/RonR-RPi-image-utils.git).
 * **Hardware-Free Testing:** Due to the comprehensive nature of the verification, a full test run takes between 1 and 2 hours. However, because it runs entirely via local emulation, developers completely bypass the need to perform slow, wear-intensive initial and regression cycles on physical Raspberry Pi hardware and SD cards.
 * **Emulated Validation:** Both the upstream revision and the local version are booted in identical, disposable QEMU guest environments replicating the physical ARM architecture.
