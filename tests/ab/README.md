@@ -90,6 +90,21 @@ Use `cleanall` only when you also want to delete all saved test results:
 ./run-ab-test.sh cleanall
 ```
 
+### 5. Verify backup images with the Backup Boot Test
+
+The `run-backup-boot-test.sh` script boots previously created backup images in QEMU and runs sanity checks to verify they are bootable and functional:
+
+```bash
+# Prepare test environment (kernel, initramfs, SSH keys) - run once
+./run-backup-boot-test.sh prepare
+
+# Boot and verify a backup image (use guest-root.qcow2, NOT guest-backup.img)
+./run-backup-boot-test.sh all artifacts/testresult*/local/guest-root.qcow2
+```
+
+Actions: `prepare` | `boot` | `sanity-check` | `all`  
+Sanity checks: SSH connectivity, systemd status, disk space, backup artifacts, SSH service, kernel version, backup manifest, essential commands.
+
 ## Results and Logs
 
 Each test invocation creates a timestamped result directory:
@@ -147,6 +162,135 @@ The final `poweroff` messages from systemd only mean that a guest was shut down.
 ## Runtime Expectations
 
 The `all` flow can take a considerable amount of time (~1–2 hours), depending on your local machine). QEMU emulates an ARM64 Raspberry Pi OS environment, and the harness performs two complete backup sequences, then checks both generated images and compares their contents. The first boot can take several minutes, and the backup and check phases can take considerably longer depending on disk speed and host load.
+
+---
+
+## Backup Boot Test
+
+This test boots a previously created backup image (`.img` file from `image-backup`) in QEMU and runs sanity checks to verify the backup is bootable and functional.
+
+### Prerequisites
+
+1. Run the A/B test preparation first (creates kernel, initramfs, and SSH keys):
+   ```bash
+   ./run-ab-test.sh prepare
+   ```
+
+2. Have a backup image file (`.img`) created by `image-backup` or from A/B test artifacts:
+   - From A/B test: `artifacts/testresult*/local/guest-backup.img` or `guest-root.qcow2`
+   - From manual `image-backup` run: the output `.img` file
+
+### Configuration
+
+Copy the example configuration:
+
+```bash
+cp config.example.env config.env
+```
+
+Edit `config.env` and set `BACKUP_IMAGE` to your backup image path, or pass it as an argument.
+
+### Usage
+
+All commands run from `tests/ab` directory:
+
+```bash
+# Prepare the test environment (kernel, initramfs, SSH keys) - run once
+./run-backup-boot-test.sh prepare
+
+# Boot the backup image and keep guest running (interactive)
+./run-backup-boot-test.sh boot /path/to/backup.img
+
+# Boot, run sanity checks, and shutdown (automated)
+./run-backup-boot-test.sh all /path/to/backup.img
+
+# Run sanity checks on already-running guest
+./run-backup-boot-test.sh sanity-check
+```
+
+### Actions
+
+| Action | Description |
+|--------|-------------|
+| `prepare` | Run `run-ab-test.sh prepare` to set up kernel, initramfs, and SSH keys |
+| `boot` | Start QEMU guest with backup image, wait for SSH, keep running |
+| `sanity-check` | Run sanity checks on already-running guest (requires SSH) |
+| `all` | Boot guest, run sanity checks, clean shutdown |
+
+### Sanity Checks
+
+The `sanity-check` and `all` actions perform:
+
+1. **Basic connectivity** - hostname, uptime, user
+2. **Systemd status** - `systemctl is-system-running --wait`
+3. **Disk space** - `df -h /`
+4. **Backup artifacts** - Check `/mnt/backup/` and `/var/tmp/image-backup*/`
+5. **SSH service** - `systemctl status ssh`
+6. **Kernel version** - `uname -a`
+7. **Backup manifest** - Read `/mnt/backup/backup.manifest` if present
+8. **Essential commands** - Verify `rsync`, `sudo`, `systemctl`, `journalctl` available
+
+### Results and Logs
+
+Each test creates a timestamped result directory:
+
+```text
+tests/ab/artifacts/backup-boot-test<UTC timestamp>/
+```
+
+Files include:
+
+```text
+result.log              # Complete run log
+qemu-console.log        # QEMU serial console output
+sanity.log              # Sanity check output
+guest-root.qcow2        # QCOW2 overlay of the backup image
+```
+
+The `result.log` file contains a complete chronological record of all tagged messages (`[INFO]`, `[PASS]`, `[FAIL]`) emitted during the run. This allows quick determination of test success/failure without parsing terminal output.
+
+A successful run ends with output similar to:
+
+```text
+[2026-09-07T10:13:33Z] [PASS] All sanity checks completed
+[2026-09-07T10:13:45Z] [PASS] Backup boot test completed successfully
+[2026-09-07T10:13:45Z] [INFO] Success Exitcode: 0
+[2026-09-07T10:13:45Z] [INFO] Backup boot test artifacts: /home/.../tests/ab/artifacts/backup-boot-test<UTC timestamp>
+```
+
+A failed run ends with a visible diagnostic, for example:
+
+```text
+[2026-09-07T09:24:12Z] [FAIL] all aborted (exit 1)
+[2026-09-07T09:24:12Z] [FAIL] stage: stopping QEMU guest
+[2026-09-07T09:24:12Z] [INFO] Fail Exitcode: 1
+[2026-09-07T09:24:12Z] [INFO] Backup boot test artifacts: /home/.../tests/ab/artifacts/backup-boot-test<UTC timestamp>
+```
+
+The final `poweroff` messages from systemd only mean that a guest was shut down. They are not a test result. Terminal sequences such as `;1R` may appear after QEMU exits; they are harmless serial-console cursor-position control codes.
+
+### Example Workflow
+
+```bash
+# 1. Prepare the test environment (once) - sets up kernel, initramfs, SSH keys
+./run-backup-boot-test.sh prepare
+
+# 2. Run A/B test to create a backup image (or use image-backup directly)
+./run-ab-test.sh all
+
+# 3. Boot the local backup image for verification
+./run-backup-boot-test.sh all artifacts/testresult20260906T070201Z/local/guest-backup.img
+
+# 4. Or boot an upstream backup image for comparison
+./run-backup-boot-test.sh all artifacts/testresult20260906T070201Z/upstream/guest-backup.img
+```
+
+### Notes
+
+- The backup image is booted using the **host kernel and initramfs** from the prepared cache (same as A/B test), not the kernel inside the backup image. This ensures QEMU compatibility.
+- The backup image is attached as a QCOW2 overlay (`-F raw -b backup.img`) so the original backup image is never modified.
+- SSH keys from the prepared cache are used (injected during `prepare`). The backup image must have been created from a prepared guest or have the same authorized_keys.
+- The test uses the same SSH port (2222 by default) as the A/B test. Only run one test at a time unless you change the port.
 
 Do not stop the script merely because the console appears quiet or remains at the serial login prompt. The harness waits for SSH in the background and prints progress every 30 seconds. Stop it only after the configured timeout, an explicit error, or a confirmed hang.
 

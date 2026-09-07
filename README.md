@@ -172,6 +172,24 @@ Modifying a critical backup utility requires absolute technical certainty that n
 
 For detailed information and the test harness source code, please refer to the [test documentation](tests/ab/README.md).
 
+### 4. Backup Boot Verification Test
+
+The `run-backup-boot-test.sh` script (in `tests/ab/`) boots previously created backup images in QEMU and runs sanity checks to verify they are bootable and functional:
+
+```bash
+cd tests/ab
+./run-backup-boot-test.sh prepare          # Set up kernel, initramfs, SSH keys (once)
+./run-backup-boot-test.sh all artifacts/testresult*/local/guest-root.qcow2
+```
+
+**Actions:** `prepare` | `boot` | `sanity-check` | `all`
+
+**Sanity checks:** SSH connectivity, systemd status, disk space, backup artifacts, SSH service, kernel version, backup manifest, essential commands.
+
+**Note:** The qcow2 images from the A/B test (`guest-root.qcow2`) are QEMU-only overlays with a generic Debian kernel - they cannot be written directly to an SD card for physical Raspberry Pi boot. Use `image-backup` on a real Pi for physical boot images.
+
+For detailed information, see the [backup boot test documentation](tests/ab/README.md#backup-boot-test).
+
 <!--- 
 You can hide shit in here  :)   LOL 
 ---> 

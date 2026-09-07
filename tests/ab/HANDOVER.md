@@ -1,6 +1,6 @@
 # Handover Document: image-backup A/B Test Fix
 
-**Date:** 2026-09-06  
+**Date:** 2026-09-08  
 **Project:** RonR-RPi-image-utils  
 **Workspace:** `./` (project root)
 
@@ -19,10 +19,12 @@ This document captures the state of the A/B test fix work for the `image-backup`
 ## Current Status
 
 **Test Status:** ✅ **PASSING** - Both initial and incremental comparisons pass  
-**Last Run:** `testresult20260906T070201Z` (2026-09-06T08:24:19Z)  
+**Last A/B Run:** `testresult20260907T165033Z` (2026-09-07T17:51:14Z)  
 **Exit Code:** 0 (comparisons pass)
 
 The A/B test compares the **local** `image-backup` script against the **upstream** revision `0ee5757f43eca29c581ccb6d7ee8818e6ed2cb98` running in QEMU ARM64 guests. The test uses `--noexpand` flag and compares normalized manifests.
+
+**Backup Boot Test:** ✅ **WORKING** - New test `run-backup-boot-test.sh` boots backup images in QEMU and runs sanity checks.
 
 ---
 
@@ -89,6 +91,50 @@ Created documentation of the two fixes with exact code snippets.
 
 ---
 
+## New Features (2026-09-07)
+
+### 4. Backup Boot Test (`run-backup-boot-test.sh`)
+
+**New test script** that boots previously created backup images in QEMU and runs sanity checks.
+
+**Actions:**
+- `prepare` - Runs `run-ab-test.sh prepare` to set up kernel, initramfs, SSH keys
+- `boot` - Starts QEMU guest with backup image, waits for SSH, keeps running
+- `sanity-check` - Runs sanity checks on already-running guest (requires SSH)
+- `all` - Boots guest, runs sanity checks, clean shutdown
+
+**Sanity Checks:**
+1. Basic connectivity (hostname, uptime, user)
+2. Systemd status (`systemctl is-system-running`)
+3. Disk space (`df -h /`)
+4. Backup artifacts (`/mnt/backup/`, `/var/tmp/image-backup*/`)
+5. SSH service status
+6. Kernel version (`uname -a`)
+7. Backup manifest (`/mnt/backup/backup.manifest`)
+8. Essential commands (`rsync`, `sudo`, `systemctl`, `journalctl`)
+
+**Key Features:**
+- **Early bootable image check** - Detects raw ext4 filesystems (like `guest-backup.img`) vs bootable disk images (like `guest-root.qcow2`) before starting QEMU
+- **qcow2 backing file support** - Automatically detects qcow2 images with backing files and checks the backing file for partition table
+- **Relative path fix** - Converts relative paths to absolute before changing directory
+- **Artifact directory** - Creates timestamped results under `tests/ab/artifacts/backup-boot-test<UTC>/`
+
+### 5. Config Merge
+
+**Merged** `config.backup-boot.example.env` into `config.example.env`:
+- Added `BACKUP_IMAGE=""` setting with documentation
+- Deleted redundant `config.backup-boot.example.env`
+- Updated `README.md` to reference single config file
+
+### 6. README.md Updates
+
+**Added to Backup Boot Test section:**
+- Artifact file types table (`guest-root.qcow2` vs `guest-backup.img`)
+- Why qcow2 differs from normal Raspberry Pi OS image (format, backing file, kernel, drivers, firmware)
+- Clear warning: "These images are QEMU-only and cannot be written directly to an SD card for physical Raspberry Pi boot"
+
+---
+
 ## Test Artifacts Location
 
 ```
@@ -96,8 +142,25 @@ tests/ab/artifacts/
 ├── testresult20260905T124939Z/   # Previous run (before compare-results.sh updates)
 ├── testresult20260905T222818Z/   # Previous run
 ├── testresult20260906T032812Z/   # Previous run (with expanded exclusions, still failing)
-└── testresult20260906T070201Z/   # **LATEST - PASSING** (all comparisons pass)
+├── testresult20260906T070201Z/   # Previous PASSING run
+├── testresult20260907T165033Z/   # **LATEST A/B - PASSING** (all comparisons pass)
+├── backup-boot-test20260907T101159Z/  # Backup boot test (PASS)
+├── backup-boot-test20260907T110246Z/  # Backup boot test (PASS)
+├── backup-boot-test20260907T143505Z/  # Backup boot test (PASS)
+├── backup-boot-test20260907T212047Z/  # Backup boot test (PASS)
+└── backup-boot-test20260907T220316Z/  # Backup boot test preflight (PASS)
 ```
+
+Each A/B test result contains:
+- `upstream/initial/` and `upstream/incremental/` - upstream results
+- `local/initial/` and `local/incremental/` - local results
+- `initial-comparison.log` / `incremental-comparison.log` - diff output (empty = pass)
+
+Each backup boot test result contains:
+- `result.log` - Complete run log with [INFO]/[PASS]/[FAIL] messages
+- `qemu-console.log` - QEMU serial console output
+- `sanity.log` - Sanity check output
+- `guest-root.qcow2` - QCOW2 overlay of the backup image
 
 Each contains:
 - `upstream/initial/` and `upstream/incremental/` - upstream results
@@ -108,21 +171,33 @@ Each contains:
 
 ## How to Resume
 
-### 1. Quick Start (if re-running full test)
+### 1. Quick Start (if re-running full A/B test)
 ```bash
 cd tests/ab
 ./run-ab-test.sh all
-```S
+```
 
-### 2. Verify Current Artifacts (no re-run needed)
-The latest artifacts at `testresult20260906T070201Z/` already pass. Verify:
+### 2. Verify Current A/B Artifacts (no re-run needed)
+The latest artifacts at `testresult20260907T165033Z/` already pass. Verify:
 ```bash
-./compare-results.sh artifacts/testresult20260906T070201Z/upstream/initial artifacts/testresult20260906T070201Z/local/initial
-./compare-results.sh artifacts/testresult20260906T070201Z/upstream/incremental artifacts/testresult20260906T070201Z/local/incremental
+./compare-results.sh artifacts/testresult20260907T165033Z/upstream/initial artifacts/testresult20260907T165033Z/local/initial
+./compare-results.sh artifacts/testresult20260907T165033Z/upstream/incremental artifacts/testresult20260907T165033Z/local/incremental
 ```
 Both should exit with code 0 and no diff output.
 
-### 3. If Test Still Fails (future runs)
+### 3. Run Backup Boot Test
+```bash
+# Prepare test environment (kernel, initramfs, SSH keys) - run once
+./run-backup-boot-test.sh prepare
+
+# Boot and verify a backup image (use guest-root.qcow2, NOT guest-backup.img)
+./run-backup-boot-test.sh all artifacts/testresult20260907T165033Z/local/guest-root.qcow2
+
+# Or boot upstream backup for comparison
+./run-backup-boot-test.sh all artifacts/testresult20260907T165033Z/upstream/guest-root.qcow2
+```
+
+### 4. If A/B Test Still Fails (future runs)
 Check the latest comparison logs:
 ```bash
 cat tests/ab/artifacts/testresultXXXXXXXXXXXXXX/initial-comparison.log
@@ -131,9 +206,12 @@ cat tests/ab/artifacts/testresultXXXXXXXXXXXXXX/incremental-comparison.log
 
 Identify new patterns in the diff that need to be added to `RUNTIME_EXCLUDE_PATTERNS` in `compare-results.sh`.
 
-### 4. Key Files to Modify
+### 5. Key Files to Modify
 - `tests/ab/compare-results.sh` - Add more exclusion patterns (if new runtime differences appear)
 - `image-backup` - Only if functional bugs found (boot copy, var/tmp exclusion already done)
+- `tests/ab/run-backup-boot-test.sh` - For backup boot test modifications
+- `tests/ab/README.md` - Documentation updates
+- `tests/ab/config.example.env` - Configuration settings
 
 ---
 
@@ -153,6 +231,11 @@ Identify new patterns in the diff that need to be added to `RUNTIME_EXCLUDE_PATT
 2. Wait ~2-3 hours (do other work)
 3. Check artifacts: `ls tests/ab/artifacts/` (find latest timestamp)
 4. Run comparison on artifacts (instant, no terminal polling needed)
+
+**Backup Boot Test (`run-backup-boot-test.sh all`):**
+- Takes ~2-5 minutes (much faster than A/B test)
+- Same principle: start once, wait for completion, check artifacts
+- Artifacts in `tests/ab/artifacts/backup-boot-test<UTC>/`
 
 ---
 
