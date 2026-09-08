@@ -181,13 +181,8 @@ The Backup Boot Verification Test is a focused QEMU smoke test for a previously 
 * **Sanity checks:** The test verifies SSH access, systemd state, disk space, backup artifacts, the SSH service, the running kernel, the backup manifest, and required commands.
 * **Disposable scope:** The test runs locally in QEMU with the prepared generic Debian ARM64 kernel. A QEMU overlay is not a physical Raspberry Pi SD-card image and must not be written directly to an SD card.
 
-```bash
-cd tests/ab
-./run-backup-boot-test.sh prepare
-./run-backup-boot-test.sh all artifacts/testresult*/local/guest-root.qcow2
-```
-
-The available actions are `prepare`, `boot`, `sanity-check`, and `all`. Use a standalone `.img` file only when it contains a partition table and boot partition. For the complete workflow, image requirements, logs, and failure diagnostics, see the [backup boot test documentation](tests/ab/README.md#backup-boot-test).
+### 5. More information about the test harness
+- For detailed information and the test harness source code, please refer to the [test documentation](tests/ab/README.md).
 
 <!--- 
 You can hide shit in here  :)   LOL 

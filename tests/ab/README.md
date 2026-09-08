@@ -167,9 +167,31 @@ The `all` flow can take a considerable amount of time (~1–2 hours), depending 
 
 ---
 
-## Backup Boot Test
+## Backup Boot Test details
 
 This test boots a previously created backup image (`.img` file from `image-backup`) in QEMU and runs sanity checks to verify the backup is bootable and functional.
+
+he Backup Boot Verification Test is important because the A/B test and filesystem checks do not prove that an image can actually start as a usable system.
+
+It provides an additional smoke test for:
+
+- valid partition layout and boot partition
+- correct root filesystem and mount configuration
+- boot-partition contents and PARTUUID handling
+- SSH and systemd startup
+- essential commands and backup artifacts
+regressions that only appear during an actual boot
+
+Typical uses:
+
+1. Run it after changing image-backup to catch boot-partition or filesystem regressions.
+2. Verify that a generated QEMU test image is usable before further inspection.
+3. Confirm that backup output is not merely structurally valid, but can start a functioning guest.
+4. Perform a quick, disposable pre-restore check without writing anything to a physical SD card.
+
+The test is intentionally limited: it uses the prepared generic ARM64 kernel and initramfs for QEMU, so it validates image layout and userspace behavior. It does not prove compatibility with Raspberry Pi firmware, the original Pi kernel, or physical Raspberry Pi hardware.
+
+For A/B artifacts, use guest-root.qcow2. guest-backup.img is the raw ext4 backup disk created inside the guest and is not itself a bootable disk image.
 
 ### Prerequisites
 
