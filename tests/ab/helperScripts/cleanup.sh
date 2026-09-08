@@ -10,7 +10,7 @@ ACTION="${2:-cleanup}"
 CONFIG_FILE="$(readlink -f "${CONFIG_FILE}")"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 cd "${PROJECT_DIR}"
 # shellcheck source=/dev/null
 source "${CONFIG_FILE}"

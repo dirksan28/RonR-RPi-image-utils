@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HELPER_DIR="${SCRIPT_DIR}/helperScripts"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 CONFIG_FILE="${AB_CONFIG:-${SCRIPT_DIR}/config.env}"
 ACTION="${1:-}"
@@ -30,7 +31,7 @@ export LANGUAGE=C
 export LC_ALL=C
 
 if [ "${ACTION}" = "cleanup" ] || [ "${ACTION}" = "clean" ] || [ "${ACTION}" = "cleanall" ]; then
-  exec bash "${SCRIPT_DIR}/cleanup.sh" "${CONFIG_FILE}" "${ACTION}"
+  exec bash "${HELPER_DIR}/cleanup.sh" "${CONFIG_FILE}" "${ACTION}"
 fi
 
 for required in BASE_IMAGE_SHA256 PREPARED_CACHE_DIR PREPARED_IMAGE KERNEL_IMAGE INITRAMFS_IMAGE GUEST_USER SSH_PRIVATE_KEY SSH_PUBLIC_KEY GUEST_WORKDIR GUEST_BACKUP_DIR GUEST_BACKUP_DEVICE BACKUP_DISK_SIZE_GB UPSTREAM_REPOSITORY UPSTREAM_REPO_DIR UPSTREAM_REVISION INITIAL_SIZE_MB ARTIFACT_DIR; do
@@ -111,7 +112,7 @@ start_guest() {
   CURRENT_STAGE="starting QEMU guest (${candidate})"
   log_message "[INFO] starting QEMU guest: ${candidate}"
   mkdir -p "${candidate_dir}"
-  "${SCRIPT_DIR}/qemu-guest.sh" start "${candidate_dir}" "${PREPARED_IMAGE}" "${KERNEL_IMAGE}" "${INITRAMFS_IMAGE}" "${BACKUP_DISK_SIZE_GB}" "${SSH_PORT}" "${QEMU_MACHINE}" "${QEMU_MEMORY_MB}" "${QEMU_CPUS}" "${QEMU_EXTRA_ARGS[@]}" &
+  "${HELPER_DIR}/qemu-guest.sh" start "${candidate_dir}" "${PREPARED_IMAGE}" "${KERNEL_IMAGE}" "${INITRAMFS_IMAGE}" "${BACKUP_DISK_SIZE_GB}" "${SSH_PORT}" "${QEMU_MACHINE}" "${QEMU_MEMORY_MB}" "${QEMU_CPUS}" "${QEMU_EXTRA_ARGS[@]}" &
   GUEST_PID=$!
   wait_for_ssh
 }
@@ -120,7 +121,7 @@ deploy_support() {
   CURRENT_STAGE="deploying guest support"
   log_message "[INFO] deploying guest support: ${CURRENT_CANDIDATE:-preflight}"
   remote "mkdir -p '${GUEST_WORKDIR}/bin' '${GUEST_WORKDIR}/artifacts'"
-  scp "${SCP_ARGS[@]}" "${SCRIPT_DIR}/remote-run.sh" "${SCRIPT_DIR}/inspect-image.sh" "${PROJECT_DIR}/image-check" "${SSH_TARGET}:${GUEST_WORKDIR}/bin/"
+  scp "${SCP_ARGS[@]}" "${HELPER_DIR}/remote-run.sh" "${HELPER_DIR}/inspect-image.sh" "${PROJECT_DIR}/image-check" "${SSH_TARGET}:${GUEST_WORKDIR}/bin/"
   remote "chmod 755 '${GUEST_WORKDIR}/bin/'*.sh '${GUEST_WORKDIR}/bin/image-check'"
 }
 
@@ -140,7 +141,7 @@ preflight() {
 prepare_cache() {
   CURRENT_STAGE="preparing guest cache"
   log_message "[INFO] prepare: building or reusing guest cache"
-  "${SCRIPT_DIR}/prepare-raspios-virt.sh" "${CONFIG_FILE}"
+  "${HELPER_DIR}/prepare-raspios-virt.sh" "${CONFIG_FILE}"
   CURRENT_STAGE="pinning upstream source"
   log_message "[INFO] prepare: checking out pinned upstream revision"
   prepare_upstream
@@ -226,7 +227,7 @@ compare_phase() {
   local report_file="${LOCAL_ARTIFACT_DIR}/${phase}-comparison.log"
   CURRENT_STAGE="comparing ${phase} results"
   log_message "[INFO] Comparing ${phase} results..."
-  if "${SCRIPT_DIR}/compare-results.sh" "${LOCAL_ARTIFACT_DIR}/upstream/${phase}" "${LOCAL_ARTIFACT_DIR}/local/${phase}" > "${report_file}" 2>&1; then
+  if "${HELPER_DIR}/compare-results.sh" "${LOCAL_ARTIFACT_DIR}/upstream/${phase}" "${LOCAL_ARTIFACT_DIR}/local/${phase}" > "${report_file}" 2>&1; then
     log_message "[PASS] ${phase} comparison"
     return 0
   else

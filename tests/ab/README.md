@@ -92,7 +92,7 @@ Use `cleanall` only when you also want to delete all saved test results:
 
 ### 5. Verify backup images with the Backup Boot Test
 
-The `run-backup-boot-test.sh` script boots previously created backup images in QEMU and runs sanity checks to verify they are bootable and functional:
+The `run-backup-boot-test.sh` script is a focused QEMU smoke test for a previously created **bootable** backup image. It starts the image with the prepared generic ARM64 kernel and initramfs, waits for SSH, runs sanity checks, and records a timestamped result.
 
 ```bash
 # Prepare test environment (kernel, initramfs, SSH keys) - run once
@@ -102,8 +102,10 @@ The `run-backup-boot-test.sh` script boots previously created backup images in Q
 ./run-backup-boot-test.sh all artifacts/testresult*/local/guest-root.qcow2
 ```
 
+For A/B artifacts, use `guest-root.qcow2`: it is the bootable QEMU guest overlay. Do **not** use `guest-backup.img`; that file is the raw ext4 backup disk created inside the guest and has no partition table or boot partition, so the boot test rejects it. A standalone `.img` file is accepted only when it contains a bootable partitioned disk image.
+
 Actions: `prepare` | `boot` | `sanity-check` | `all`  
-Sanity checks: SSH connectivity, systemd status, disk space, backup artifacts, SSH service, kernel version, backup manifest, essential commands.
+Sanity checks: SSH connectivity, systemd status, disk space, backup artifacts, SSH service, kernel version, backup manifest, and essential commands.
 
 ## Results and Logs
 
@@ -134,7 +136,7 @@ incremental-comparison.log
 
 The `result.log` file contains a complete chronological record of all tagged messages (`[INFO]`, `[PASS]`, `[FAIL]`) emitted during the run. This allows quick determination of test success/failure without parsing terminal output.
 
-`inspect-image.sh` inspects the generated image read-only. It pre-calculates regular-file SHA-256 hashes in parallel, then reads the remaining metadata with native `find -printf` formatting instead of spawning `stat` for every entry. It emits timestamped progress messages reporting entries processed, regular files hashed, throughput, and elapsed time. Progress is reported every 5,000 entries by default and at least every 30 seconds; set `INSPECT_PROGRESS_ENTRIES` or `INSPECT_PROGRESS_INTERVAL` in the guest environment to adjust these thresholds. Each phase stores the combined inspection output in `inspect-image.log` and its exit code in `inspect-image.status`. The generated `root.manifest` and `boot.manifest` format is unchanged.
+`helperScripts/inspect-image.sh` inspects the generated image read-only. It pre-calculates regular-file SHA-256 hashes in parallel, then reads the remaining metadata with native `find -printf` formatting instead of spawning `stat` for every entry. It emits timestamped progress messages reporting entries processed, regular files hashed, throughput, and elapsed time. Progress is reported every 5,000 entries by default and at least every 30 seconds; set `INSPECT_PROGRESS_ENTRIES` or `INSPECT_PROGRESS_INTERVAL` in the guest environment to adjust these thresholds. Each phase stores the combined inspection output in `inspect-image.log` and its exit code in `inspect-image.status`. The generated `root.manifest` and `boot.manifest` format is unchanged.
 
 A successful run ends with output similar to:
 
@@ -176,9 +178,9 @@ This test boots a previously created backup image (`.img` file from `image-backu
    ./run-ab-test.sh prepare
    ```
 
-2. Have a backup image file (`.img`) created by `image-backup` or from A/B test artifacts:
-   - From A/B test: `artifacts/testresult*/local/guest-backup.img` or `guest-root.qcow2`
-   - From manual `image-backup` run: the output `.img` file
+2. Have a bootable backup image file:
+   - From A/B test: `artifacts/testresult*/local/guest-root.qcow2` or the corresponding upstream overlay
+   - From a manual `image-backup` run: an output `.img` containing a partition table and boot partition
 
 ### Configuration
 
@@ -275,22 +277,22 @@ The final `poweroff` messages from systemd only mean that a guest was shut down.
 # 1. Prepare the test environment (once) - sets up kernel, initramfs, SSH keys
 ./run-backup-boot-test.sh prepare
 
-# 2. Run A/B test to create a backup image (or use image-backup directly)
+# 2. Run A/B test to create a bootable QEMU artifact (or use image-backup directly)
 ./run-ab-test.sh all
 
 # 3. Boot the local backup image for verification
-./run-backup-boot-test.sh all artifacts/testresult20260906T070201Z/local/guest-backup.img
+./run-backup-boot-test.sh all artifacts/testresult20260906T070201Z/local/guest-root.qcow2
 
 # 4. Or boot an upstream backup image for comparison
-./run-backup-boot-test.sh all artifacts/testresult20260906T070201Z/upstream/guest-backup.img
+./run-backup-boot-test.sh all artifacts/testresult20260906T070201Z/upstream/guest-root.qcow2
 ```
 
 ### Notes
 
-- The backup image is booted using the **host kernel and initramfs** from the prepared cache (same as A/B test), not the kernel inside the backup image. This ensures QEMU compatibility.
-- The backup image is attached as a QCOW2 overlay (`-F raw -b backup.img`) so the original backup image is never modified.
+- The image is booted using the **generic ARM64 kernel and initramfs** from the prepared cache, not the kernel inside the input image. This provides the QEMU `virt` compatibility needed for the test.
 - SSH keys from the prepared cache are used (injected during `prepare`). The backup image must have been created from a prepared guest or have the same authorized_keys.
 - The test uses the same SSH port (2222 by default) as the A/B test. Only run one test at a time unless you change the port.
+- A/B `guest-root.qcow2` artifacts are QEMU-only overlays for validation. They are not physical Raspberry Pi SD-card images and must not be written directly to an SD card.
 
 Do not stop the script merely because the console appears quiet or remains at the serial login prompt. The harness waits for SSH in the background and prints progress every 30 seconds. Stop it only after the configured timeout, an explicit error, or a confirmed hang.
 
@@ -302,7 +304,7 @@ After a message such as:
 [2026-09-04T10:22:45Z] [INFO] upstream/initial: inspecting image contents (this may take a while)
 ```
 
-the guest may remain quiet for a long time. This is expected: `inspect-image.sh` first hashes regular files with parallel `sha256sum` workers and then walks both filesystems with a native `find -printf` metadata scan. Do not interrupt the test merely because inspection is slow. Its progress messages appear in the terminal and in `inspect-image.log`; inspection is read-only and does not alter the generated image or manifest format.
+the guest may remain quiet for a long time. This is expected: `helperScripts/inspect-image.sh` first hashes regular files with parallel `sha256sum` workers and then walks both filesystems with a native `find -printf` metadata scan. Do not interrupt the test merely because inspection is slow. Its progress messages appear in the terminal and in `inspect-image.log`; inspection is read-only and does not alter the generated image or manifest format.
 
 While `image-backup` is running, the guest prints a progress line every 30 seconds and lists active `image-backup`, `rsync`, `e2fsck`, `resize2fs`, and partitioning processes. This is especially useful after the last visible `e2fsck` line: image finalization can still be working on the second dry-run synchronization.
 
@@ -363,7 +365,7 @@ The preparation process keeps the downloaded source image immutable. It creates 
 
 The harness sets `LANG=C`, `LANGUAGE=C`, and `LC_ALL=C` for host-controlled and guest test commands. This avoids warnings from unavailable host-specific locales such as `de_DE.UTF-8`; it does not change or assume a timezone.
 
-For each candidate, `qemu-guest.sh` creates a disposable QCOW2 overlay from the prepared image and a fresh virtual backup disk. The guest mounts the backup disk at `/mnt/backup`, where the candidate creates its `.img` file. The guest also creates controlled fixture files, a symlink, a bind mount, and external content so the dynamic exclusion behavior can be checked.
+For each candidate, `helperScripts/qemu-guest.sh` creates a disposable QCOW2 overlay from the prepared image and a fresh virtual backup disk. The guest mounts the backup disk at `/mnt/backup`, where the candidate creates its `.img` file. The guest also creates controlled fixture files, a symlink, a bind mount, and external content so the dynamic exclusion behavior can be checked.
 
 For each candidate, the corresponding `image-backup` script is copied into the guest and executed **inside the virtual QEMU machine** through SSH. The upstream script comes from the pinned checkout in `cache/upstream-repo`; the local script comes from this project. Both scripts therefore back up the same kind of running guest system, but in separate sequential QEMU guests.
 
@@ -387,13 +389,13 @@ For each candidate, the harness records:
 
 The comparison does not require the raw `.img` files to be byte-identical. It compares the normalized manifests and filtered partition metadata. A comparison passes when both expected manifests match and the intentional behavior difference is correct: the upstream result may contain the external bind-mount fixture, while the local result must exclude it and report the dynamic exclusion. The initial and incremental image checks must also complete successfully.
 
-### Comparison and Normalization (`compare-results.sh`)
+### Comparison and Normalization (`helperScripts/compare-results.sh`)
 
-The `compare-results.sh` script performs the final comparison between upstream and local results. It is invoked by `run-ab-test.sh` after both candidates complete, but can also be run manually on existing artifact directories:
+The `helperScripts/compare-results.sh` script performs the final comparison between upstream and local results. It is invoked by `run-ab-test.sh` after both candidates complete, but can also be run manually on existing artifact directories:
 
 ```bash
-./compare-results.sh artifacts/testresultXXXXXXXXXXXXXX/upstream/initial artifacts/testresultXXXXXXXXXXXXXX/local/initial
-./compare-results.sh artifacts/testresultXXXXXXXXXXXXXX/upstream/incremental artifacts/testresultXXXXXXXXXXXXXX/local/incremental
+./helperScripts/compare-results.sh artifacts/testresultXXXXXXXXXXXXXX/upstream/initial artifacts/testresultXXXXXXXXXXXXXX/local/initial
+./helperScripts/compare-results.sh artifacts/testresultXXXXXXXXXXXXXX/upstream/incremental artifacts/testresultXXXXXXXXXXXXXX/local/incremental
 ```
 
 #### Manifest Format
@@ -440,11 +442,11 @@ Each QEMU guest boots fresh, so system state naturally differs between runs. The
 
 #### Extending Patterns in the Future
 
-If a new test run fails with diffs that are **runtime artifacts** (not functional bugs), add patterns to `RUNTIME_EXCLUDE_PATTERNS` in `compare-results.sh`:
+If a new test run fails with diffs that are **runtime artifacts** (not functional bugs), add patterns to `RUNTIME_EXCLUDE_PATTERNS` in `helperScripts/compare-results.sh`:
 
 1. Identify the differing path from the diff output.
 2. Add a pattern matching the path prefix followed by `[[:space:]]` (e.g., `'^var/lib/new-runtime-path[[:space:]]'`).
-3. Re-run `compare-results.sh` on the same artifacts to verify the diff disappears.
+3. Re-run `helperScripts/compare-results.sh` on the same artifacts to verify the diff disappears.
 
 **Do not** add patterns for functional differences (e.g., missing boot firmware files, missing `/var/tmp` exclusion) — those indicate bugs in `image-backup` that should be fixed in the script itself.
 
@@ -453,11 +455,11 @@ A test fails when a candidate cannot boot or be reached over SSH, a backup phase
 The test commands are defined in these files:
 
 - `run-ab-test.sh` orchestrates preparation, QEMU guests, candidates, phases, and comparisons.
-- `remote-run.sh` defines guest setup, fixtures, initial/incremental backup commands, and artifact collection.
-- `compare-results.sh` defines normalization filters and PASS/FAIL comparison rules.
-- `inspect-image.sh` defines read-only image mounting and manifest generation.
+- `helperScripts/remote-run.sh` defines guest setup, fixtures, initial/incremental backup commands, and artifact collection.
+- `helperScripts/compare-results.sh` defines normalization filters and PASS/FAIL comparison rules.
+- `helperScripts/inspect-image.sh` defines read-only image mounting and manifest generation.
 
-To adapt the test, change the fixture creation or mutation functions in `remote-run.sh`, adjust the normalized comparison and expected differences in `compare-results.sh`, or add artifact/phase handling in `run-ab-test.sh`. Keep the upstream and local candidate invocations identical unless the difference is itself part of the behavior under test.
+To adapt the test, change the fixture creation or mutation functions in `helperScripts/remote-run.sh`, adjust the normalized comparison and expected differences in `helperScripts/compare-results.sh`, or add artifact/phase handling in `run-ab-test.sh`. Keep the upstream and local candidate invocations identical unless the difference is itself part of the behavior under test.
 
 ## Maintenance
 
@@ -526,13 +528,13 @@ The script automatically evaluates the new SHA-256 hashes. It will bypass large 
 
 ### Agentic Support
 
-Two documentation files in this directory support AI-assisted maintenance and continuation:
+Two documentation files in `agentic-context/` support AI-assisted maintenance and continuation:
 
 | File | Purpose | Audience | Lifecycle |
 |------|---------|----------|-----------|
-| `plan-qemuImageBackupAbTest.prompt.md` | Design specification for the test harness | Someone understanding/extending the test architecture | Relatively static (test design) |
-| `HANDOVER.md` | Continuation guide for the fix work | Someone picking up the fix work on another machine | Evolves with each session |
+| `agentic-context/plan-qemuImageBackupAbTest.prompt.md` | Design specification for the test harness | Someone understanding/extending the test architecture | Relatively static (test design) |
+| `agentic-context/HANDOVER.md` | Continuation guide for the fix work | Someone picking up the fix work on another machine | Evolves with each session |
 
 **Content focus:**
-- `plan-qemuImageBackupAbTest.prompt.md` — "What the test does and why" (fixtures, QEMU setup, manifest generation, comparison logic)
-- `HANDOVER.md` — "What was broken, what's fixed, how to resume" (boot copy fix, var/tmp exclusion, runtime normalization patterns, passing artifacts)
+- `agentic-context/plan-qemuImageBackupAbTest.prompt.md` — "What the test does and why" (fixtures, QEMU setup, manifest generation, comparison logic)
+- `agentic-context/HANDOVER.md` — "What was broken, what's fixed, how to resume" (boot copy fix, var/tmp exclusion, runtime normalization patterns, passing artifacts)

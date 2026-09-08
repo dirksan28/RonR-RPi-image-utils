@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+PROJECT_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 CONFIG_FILE="${1:-}"
 [ -n "${CONFIG_FILE}" ] && [ -f "${CONFIG_FILE}" ] || {
   echo "Usage: $0 CONFIG_FILE" >&2

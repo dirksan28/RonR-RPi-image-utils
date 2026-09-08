@@ -174,21 +174,20 @@ For detailed information and the test harness source code, please refer to the [
 
 ### 4. Backup Boot Verification Test
 
-The `run-backup-boot-test.sh` script (in `tests/ab/`) boots previously created backup images in QEMU and runs sanity checks to verify they are bootable and functional:
+The Backup Boot Verification Test is a focused QEMU smoke test for a previously created **bootable** backup image. It checks that the image starts and that the resulting guest remains usable without requiring a physical Raspberry Pi:
+
+* **Preparation:** `run-ab-test.sh prepare` creates or reuses the generic ARM64 QEMU kernel, initramfs, and isolated test SSH key used by the boot test.
+* **Image selection:** For A/B artifacts, use `guest-root.qcow2`. The related `guest-backup.img` is a raw ext4 backup disk without a partition table or boot partition and is not a boot-test input.
+* **Sanity checks:** The test verifies SSH access, systemd state, disk space, backup artifacts, the SSH service, the running kernel, the backup manifest, and required commands.
+* **Disposable scope:** The test runs locally in QEMU with the prepared generic Debian ARM64 kernel. A QEMU overlay is not a physical Raspberry Pi SD-card image and must not be written directly to an SD card.
 
 ```bash
 cd tests/ab
-./run-backup-boot-test.sh prepare          # Set up kernel, initramfs, SSH keys (once)
+./run-backup-boot-test.sh prepare
 ./run-backup-boot-test.sh all artifacts/testresult*/local/guest-root.qcow2
 ```
 
-**Actions:** `prepare` | `boot` | `sanity-check` | `all`
-
-**Sanity checks:** SSH connectivity, systemd status, disk space, backup artifacts, SSH service, kernel version, backup manifest, essential commands.
-
-**Note:** The qcow2 images from the A/B test (`guest-root.qcow2`) are QEMU-only overlays with a generic Debian kernel - they cannot be written directly to an SD card for physical Raspberry Pi boot. Use `image-backup` on a real Pi for physical boot images.
-
-For detailed information, see the [backup boot test documentation](tests/ab/README.md#backup-boot-test).
+The available actions are `prepare`, `boot`, `sanity-check`, and `all`. Use a standalone `.img` file only when it contains a partition table and boot partition. For the complete workflow, image requirements, logs, and failure diagnostics, see the [backup boot test documentation](tests/ab/README.md#backup-boot-test).
 
 <!--- 
 You can hide shit in here  :)   LOL 
