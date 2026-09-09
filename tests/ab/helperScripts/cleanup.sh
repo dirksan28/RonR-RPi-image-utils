@@ -1,4 +1,18 @@
 #!/bin/bash
+# Remove test-owned QEMU, mount, and loop resources while preserving the prepared cache.
+#
+# Synopsis:
+#   Usage: cleanup.sh CONFIG_FILE [cleanup|clean|cleanall]
+#   Expects the A/B test configuration and an optional cleanup action.
+#   Stops test QEMU processes, unmounts test filesystems, detaches test loops,
+#   and removes artifact results only for the cleanall action.
+#   Returns 0 after cleanup; returns 2 when CONFIG_FILE is missing or invalid.
+#
+#   CONFIG_FILE is a sourced Bash file, for example:
+#     PREPARED_CACHE_DIR="/path/to/tests/ab/cache"
+#     ARTIFACT_DIR="/path/to/tests/ab/artifacts"
+#     SSH_PORT=2222
+#   See tests/ab/config.example.env for the complete configuration template.
 set -u
 
 CONFIG_FILE="${1:-}"
@@ -15,6 +29,7 @@ cd "${PROJECT_DIR}"
 # shellcheck source=/dev/null
 source "${CONFIG_FILE}"
 
+# Fall back to the repository test paths so cleanup remains useful with a partial config.
 CACHE_DIR="${PREPARED_CACHE_DIR:-${PROJECT_DIR}/tests/ab/cache}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-${PROJECT_DIR}/tests/ab/artifacts}"
 SSH_PORT="${SSH_PORT:-2222}"
@@ -23,6 +38,7 @@ log() {
   printf '[cleanup] %s\n' "$*"
 }
 
+# Track resources once; later cleanup steps can safely be called on repeated runs.
 declare -a TEST_LOOPS=()
 declare -a MOUNT_TARGETS=()
 
@@ -50,6 +66,7 @@ add_mount_target() {
 
 stop_test_qemu() {
   local pid cmdline
+  # Terminate only QEMU processes that can be tied to this test workspace or port.
   while read -r pid; do
     [ -d "/proc/${pid}" ] || continue
     cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
@@ -65,6 +82,7 @@ stop_test_qemu() {
     esac
   done < <(pgrep -x qemu-system-aarch64 2>/dev/null || true)
 
+  # Give a terminated guest a short grace period before checking for leftovers.
   local attempt
   for attempt in 1 2 3 4 5; do
     local still_running=0
@@ -78,6 +96,7 @@ stop_test_qemu() {
     sleep 1
   done
 
+  # A stuck guest can retain mounts, so force-stop only the same identified processes.
   while read -r pid; do
     [ -d "/proc/${pid}" ] || continue
     cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
@@ -92,6 +111,7 @@ stop_test_qemu() {
 
 collect_test_loops() {
   local loop backing_file
+  # Loop devices backed by the prepared cache are test-owned and safe to detach later.
   while read -r loop backing_file; do
     loop="${loop%:}"
     case "${backing_file}" in
@@ -104,6 +124,7 @@ collect_test_loops() {
 
 collect_mounts() {
   local target source loop partition
+  # Collect known temporary mounts and anything attached to the test loop partitions.
   while read -r target source; do
     case "${target}:${source}" in
       /tmp/tmp.*:*|/media/*/bootfs:/dev/loop*|/media/*/rootfs:/dev/loop*)
@@ -123,6 +144,7 @@ collect_mounts() {
 
 unmount_test_mounts() {
   local target
+  # Unmount deepest paths first so nested mounts do not block their parents.
   while read -r target; do
     [ -n "${target}" ] || continue
     log "Unmounting ${target}"
@@ -133,6 +155,7 @@ unmount_test_mounts() {
 
 detach_test_loops() {
   local loop
+  # Detach loops after mounts are gone, then wait for udev to finish device cleanup.
   for loop in "${TEST_LOOPS[@]}"; do
     log "Detaching ${loop}"
     sudo losetup --detach "${loop}" 2>/dev/null || true
@@ -148,6 +171,7 @@ detach_test_loops() {
 }
 
 clear_artifacts() {
+  # Only cleanall may remove results, and only below the repository artifact directory.
   [ "${ACTION}" = "cleanall" ] || {
     log "Keeping test results under ${ARTIFACT_DIR}"
     return 0
@@ -163,6 +187,7 @@ clear_artifacts() {
   esac
 }
 
+# Cleanup order matters: stop guests before discovering and detaching their resources.
 log "Preserving cache: ${CACHE_DIR}"
 stop_test_qemu
 collect_test_loops

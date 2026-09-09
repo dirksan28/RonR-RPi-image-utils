@@ -1,7 +1,14 @@
 #!/bin/bash
+# image-mount mounts a standard 'raw' image file so it can be read or written as a device.
+#
+# Synopsis:
+#   Usage: image-mount imagefile mountpoint [W95|Linux]
+#   W95 mounts the BOOT partition; Linux mounts the ROOT partition.
+#   Linux is assumed when no partition is specified.
 
 errexit()
 {
+  # Centralize errors so failed setup does not continue into mount operations.
   echo ""
   echo "$1"
   echo ""
@@ -13,6 +20,7 @@ usage()
   errexit "Usage: $0 imagefile mountpoint [W95|Linux]"
 }
 
+# Mounting image partitions and running fsck require root privileges.
 if [ $(id -u) -ne 0 ]; then
   errexit "$0 must be run as root user"
 fi
@@ -34,6 +42,8 @@ fi
 if [ ! -d "${MNT}" ]; then
   errexit "${MNT} is not a directory"
 fi
+# Linux/root is the default; W95 selects the boot partition.
+# W95 mounts boot/FAT partition 1; Linux mounts root partition 2.
 if [ "${PART}" = "" ]; then
   PART="2"
 else
@@ -46,6 +56,7 @@ else
     usage
   fi
 fi
+# Ask before attaching and mounting the image read-write.
 echo ""
 echo -n "Mount ${IMGFILE} on ${MNT} (y/n)? "
 while read -r -n 1 -s answer; do
@@ -59,10 +70,12 @@ while read -r -n 1 -s answer; do
   fi
 done
 echo ""
+# Expose the image partitions as loop devices before checking the selected filesystem.
 LOOP="$(losetup -f --show -P "${IMGFILE}")"
 if [ $? -ne 0 ]; then
   errexit "Unable to create loop device"
 fi
+# The boot partition uses FAT; the root partition may use F2FS or ext4.
 if [ "${PART}" = "1" ]; then
   dosfsck "${LOOP}p${PART}"
 else
@@ -77,6 +90,7 @@ if [ $? -ne 0 ]; then
   losetup -d "${LOOP}"
   errexit "Filesystem appears corrupted"
 fi
+# Leave the loop device attached so the mounted filesystem remains usable.
 mount "${LOOP}p${PART}" ${MNT}
 echo ""
 echo "${IMGFILE} mounted on ${MNT}"

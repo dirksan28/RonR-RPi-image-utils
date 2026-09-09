@@ -1,4 +1,11 @@
 #!/bin/bash
+#
+# Synopsis:
+#   Usage: run-backup-boot-test.sh {prepare|boot|sanity-check|all} [BACKUP_IMAGE_PATH]
+#   BACKUP_IMAGE_PATH may also be supplied through BACKUP_IMAGE in config.env.
+#
+# check ./README.md for more details
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

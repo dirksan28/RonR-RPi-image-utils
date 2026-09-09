@@ -1,7 +1,14 @@
 #!/bin/bash
+# image-check checks the integrity of a standard 'raw' image file.
+#
+# Synopsis:
+#   Usage: image-check imagefile [W95|Linux]
+#   W95 checks the BOOT partition; Linux checks the ROOT partition.
+#   Linux is assumed when no partition is specified.
 
 errexit()
 {
+  # Keep error output consistent and terminate without leaving further work to do.
   echo ""
   echo "$1"
   echo ""
@@ -13,6 +20,7 @@ usage()
   errexit "Usage: $0 [--non-interactive] imagefile [W95|Linux]"
 }
 
+# Filesystem checks access image partitions through loop devices and require root.
 if [ $(id -u) -ne 0 ]; then
   errexit "$0 must be run as root user"
 fi
@@ -22,6 +30,7 @@ for PID in $(pidof -x -o %PPID "${PGMNAME}"); do
     errexit "${PGMNAME} is already running"
   fi
 done
+# The non-interactive mode is used by automated callers such as the A/B test.
 NON_INTERACTIVE=FALSE
 if [ "${1}" = "--non-interactive" ]; then
   NON_INTERACTIVE=TRUE
@@ -35,6 +44,8 @@ fi
 if [ ! -f "${IMGFILE}" ]; then
   errexit "${IMGFILE} not found"
 fi
+# Linux/root is the default; W95 selects the boot partition instead.
+# W95 checks boot/FAT partition 1; Linux checks root partition 2.
 if [ "${PART}" = "" ]; then
   PART="2"
 else
@@ -47,6 +58,7 @@ else
     usage
   fi
 fi
+# Interactive runs ask for confirmation before touching the image.
 if [ "${NON_INTERACTIVE}" = "FALSE" ]; then
   echo ""
   echo -n "Check ${IMGFILE} (y/n)? "
@@ -62,10 +74,12 @@ if [ "${NON_INTERACTIVE}" = "FALSE" ]; then
   done
   echo ""
 fi
+# Attach the image and expose its partition devices for fsck.
 LOOP="$(losetup -f --show -P "${IMGFILE}")"
 if [ $? -ne 0 ]; then
   errexit "Unable to create loop device"
 fi
+# Select the checker for the boot filesystem or the root filesystem type.
 FS_TYPE=$(blkid "${LOOP}p${PART}" | sed -n 's|^.*TYPE="\(\S\+\)".*|\1|p')
 if [ "${PART}" = "1" ]; then
   if [ "${NON_INTERACTIVE}" = "TRUE" ]; then
@@ -88,10 +102,12 @@ if [ $? -ne 0 ]; then
   losetup -d "${LOOP}"
   errexit "Filesystem appears corrupted"
 fi
+# Print ext4 metadata when available; this is useful after a successful check.
 if [ "${FS_TYPE}" = "ext4" ]; then
   echo ""
   INFO="$(tune2fs -l "${LOOP}p${PART}" 2>/dev/null)"
   echo "${INFO}"
 fi
+# The image is no longer needed through the loop device after the check completes.
 losetup -d "${LOOP}"
 echo ""

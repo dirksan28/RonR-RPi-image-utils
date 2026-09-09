@@ -1,4 +1,15 @@
 #!/bin/bash
+# image-backup creates a backup of a running Raspbian system in a standard 'raw' image file
+# that can be written to an SD card or USB device. It also updates existing images incrementally.
+#
+# Synopsis:
+#   Usage: image-backup [options] [pathto/imagefile for incremental backup]
+#   -h,--help       This usage description
+#   -i,--initial    pathto/filename [,initial size MB [,added space for incremental MB]]
+#   -n,--noexpand   Do not expand filesystem on first run after restore
+#   -o,--options    Additional rsync options (comma separated)
+#   -u,--ubuntu     Ubuntu (Deprecated)
+#   -x,--extract    Extract image from NOOBS
 
 trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
 
@@ -6,10 +17,12 @@ MY_TMP="${TMPDIR:-/tmp}"
 MNTPATH="${MY_TMP}/img-backup-mnt"
 ROOT_PART=$(findmnt -nvo SOURCE /)
 
+# The destination image must live outside the running root filesystem being copied.
 ONEMB=$((1024 * 1024))
 
 errexit()
 {
+  # Centralize user-facing errors and best-effort cleanup for mounts and loop devices.
   echo ""
   echo -e "$1"
   echo ""
@@ -24,6 +37,7 @@ errexit()
 
 mkloop()
 {
+  # Partscan exposes the image partitions as ${LOOP}p1 and ${LOOP}p2.
   LOOP="$(losetup -f --show -P "${IMGFILE}")"
   if [ $? -ne 0 ]; then
     errexit "Unable to create loop device"
@@ -32,6 +46,7 @@ mkloop()
 
 rmloop()
 {
+  # Detach the image after all filesystem operations are complete.
   if [ "${LOOP}" != "" ]; then
     losetup -d "${LOOP}"
     LOOP="" 
@@ -40,6 +55,7 @@ rmloop()
 
 mntimg()
 {
+  # Mount root first, then boot, so backup and cleanup can address both partitions.
   mkloop
   if [ ! -d "${MNTPATH}/" ]; then
     mkdir "${MNTPATH}/"
@@ -66,6 +82,7 @@ mntimg()
 
 umntimg()
 {
+  # Unmount in reverse order before releasing the loop device.
   umount "${BOOTMNT}/"
   if [ $? -ne 0 ]; then
     errexit "Unable to unmount image BOOT partition"
@@ -81,6 +98,7 @@ umntimg()
 
 fsckerr()
 {
+  # Include the resize stage in the error because both checks use the same command.
   errexit "Filesystem appears corrupted "$1" resize2fs"
 }
 
@@ -97,6 +115,7 @@ usage()
 
 backup()
 {
+  # Copy the running root filesystem, then synchronize boot and partition metadata.
   mntimg
   sync
   TARGET_MNT=$(findmnt -nvo TARGET "${TARGET_PART}" 2>/dev/null)
@@ -119,6 +138,7 @@ backup()
 
   DYNAMIC_EXCLUDES=()
 
+  # Exclude external mounts and symlink targets before copying the root filesystem.
   # 1. Analyze all actual mountpoints and bind mounts
   while read -r MNT_POINT MNT_SOURCE; do
     if [ "$MNT_POINT" = "/" ] || [ -z "$MNT_POINT" ]; then continue; fi
@@ -165,17 +185,19 @@ backup()
 --exclude '/proc' --exclude '/run' --exclude '/sys' --exclude '/tmp' --exclude '/var/tmp' --exclude '/var/swap' --exclude '/etc/udev/rules.d/70-persistent-net.rules' \
 --exclude '/var/lib/asterisk/astdb.sqlite3-journal' "${DYNAMIC_EXCLUDES[@]}" "${OPTIONS[@]}" / "${MNTPATH}/"
 
+  # rsync exit code 24 means files vanished during the live copy and is accepted here.
   RSYNC_STATUS=$?
   if [ "${RSYNC_STATUS}" -ne 0 ] && [ "${RSYNC_STATUS}" -ne 24 ]; then
     errexit "Unable to create backup"
   fi
+  # Recreate mountpoint directories that were intentionally excluded from the copy.
   mkdir -p "${MNTPATH}/dev/" "${MNTPATH}/lost+found/" "${MNTPATH}/media/" "${MNTPATH}/mnt/" "${MNTPATH}/proc/" "${MNTPATH}/run/" "${MNTPATH}/sys/" "${MNTPATH}/tmp/"
   if [ $? -ne 0 ]; then
     errexit "Unable to create image directories"
   fi
   chmod a+rwxt "${MNTPATH}/tmp/"
 
-  # Copy boot partition contents from source system
+  # Boot is a separate partition, so synchronize it explicitly from the running system.
   SOURCE_BOOT_MNT=$(sed -n '/^[[:space:]]*#/!s|^\S\+\s\+\(/boot\S*\)\s\+.*$|\1|p' /etc/fstab)
   if [ -n "${SOURCE_BOOT_MNT}" ] && [ -d "${SOURCE_BOOT_MNT}" ]; then
     echo -e "\n\e[1;34m[*] Copying boot partition contents...\e[0m"
@@ -193,6 +215,7 @@ backup()
     sed -i "/^[[:space:]]*#/!s|^\S\+\(\s\+/\s\+.*\)$|PARTUUID=${PTUUID}-02\1|" "${MNTPATH}/etc/fstab"
   fi
   if [[ "${OSID}" != "ubuntu" && "${NOEXPAND}" = "FALSE" && "${ROOT_TYPE}" != "f2fs" ]]; then
+    # Install a one-shot first-boot hook so the restored root filesystem fills the disk.
     if [ ! -f "${MNTPATH}/etc/rc.local" ]; then
       cat <<EOF > "${MNTPATH}/etc/rc.local"
 #!/bin/sh -e
@@ -202,25 +225,34 @@ EOF
       chmod +x "${MNTPATH}/etc/rc.local"
     fi
     if [ $(grep -v '^[[:space:]]*#' "${MNTPATH}/etc/rc.local" | grep -c 'resize-root-fs') -eq 0 ]; then
+      # Write a first-boot helper into the image. It expands partition 2 first,
+      # then uses a reboot so the kernel can see the new partition size before resize2fs runs.
       cat <<\EOF1 > "${MNTPATH}/etc/resize-root-fs"
 #!/bin/bash
 
+# Find the mounted root partition and derive its parent disk device.
 ROOT_PART="$(mount | sed -n 's|^\(/dev/.*\) on / .*|\1|p')"
 ROOT_DEV="$(sed 's/[0-9]\+$//' <<< "${ROOT_PART}")"
+# mmcblk and NVMe devices include a separator before the partition number.
 if [[ "${ROOT_DEV}" =~ ^/dev/mmcblk[0-9]p$ || "${ROOT_DEV}" =~ ^/dev/nvme[0-9]n1p$ ]]; then
   ROOT_DEV="${ROOT_DEV:0:(${#ROOT_DEV} - 1)}"
 fi
+# Keep partition 2's starting sector and extend it to the end of the disk.
 START=$(sfdisk -d "${ROOT_DEV}" | sed -n "s|^${ROOT_PART}\s\+:.*start=\s*\([0-9]\+\).*$|\1|p")
+# Partition-table type determines which tool and syntax can safely rewrite partition 2.
 PTTYPE="$(blkid "${ROOT_DEV}" | sed -n 's|^.*PTTYPE="\(\S\+\)".*|\1|p')"
 if [ "${PTTYPE}" = "dos" ]; then
+  # DOS partition tables can recreate partition 2 by start sector and size.
   sfdisk --delete "${ROOT_DEV}" 2 > /dev/null
   echo "${START},+" | sfdisk --no-reread --no-tell-kernel -N2 "${ROOT_DEV}" &> /dev/null
 else
+  # GPT needs the original root PARTUUID restored after partition 2 is recreated.
   PARTUUID="$(blkid "${ROOT_PART}" | sed -n 's|^.*PARTUUID="\(\S\+\)".*|\1|p')"
   sgdisk -d 2 "${ROOT_DEV}" > /dev/null
   sgdisk -n 2:${START}:0 "${ROOT_DEV}" > /dev/null
   sgdisk -u 2:${PARTUUID} "${ROOT_DEV}" > /dev/null
 fi
+# Install a one-shot init script to resize the filesystem after the partition grows.
 cat <<\EOF2 > /etc/init.d/resize_root_fs
 #!/bin/sh
 ### BEGIN INIT INFO
@@ -235,7 +267,9 @@ cat <<\EOF2 > /etc/init.d/resize_root_fs
 
 case "$1" in
   start)
+    # The reboot has made the larger partition visible to the filesystem tools.
     resize2fs "$(mount | sed -n 's|^\(/dev/.*\) on / .*|\1|p')"
+    # Remove this init script after the one required resize operation.
     update-rc.d resize_root_fs remove
     rm /etc/init.d/resize_root_fs
     ;;
@@ -244,19 +278,23 @@ case "$1" in
     ;;
 esac
 EOF2
+# Enable the resize script for the next boot, then remove the temporary helper.
 chmod +x /etc/init.d/resize_root_fs
 update-rc.d resize_root_fs defaults
 sed -i '/resize-root-fs/d' /etc/rc.local
 rm /etc/resize-root-fs
+# Reboot so the kernel rereads the partition table before resize2fs runs.
 shutdown --no-wall -r now
 EOF1
       chmod +x "${MNTPATH}/etc/resize-root-fs"
+  # Run the helper from rc.local exactly once on the first boot.
       sed -i 's|^exit 0$|/etc/resize-root-fs\nexit 0|' "${MNTPATH}/etc/rc.local"
     fi
   fi
   sync
   umntimg
   mkloop
+  # Preserve source filesystem labels for tools and users that rely on them after restore.
   fatlabel "${LOOP}p1" "$(fatlabel ${ROOT_DEV_P}1 | sed -n '$p')" &> /dev/null
   e2label "${LOOP}p2" "$(e2label ${ROOT_DEV_P}2)" &> /dev/null
   rmloop
@@ -265,6 +303,7 @@ EOF1
 LOOP=""
 MNTED=FALSE
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Image creation changes block devices, mounts, and filesystems, so require root first.
 if [ $(id -u) -ne 0 ]; then
   errexit "$0 must be run as root user"
 fi
@@ -274,6 +313,7 @@ for PID in $(pidof -x -o %PPID "${PGMNAME}"); do
     errexit "${PGMNAME} is already running"
   fi
 done
+# gdisk is optional only when it is already installed; rsync is required for every backup.
 gdisk -l "${DEVICE}" &> /dev/null
 if [ $? -eq 127 ]; then
   echo ""
@@ -314,6 +354,7 @@ if [[ "${ROOT_DEV}" =~ ^/dev/mmcblk[0-9]p$ || "${ROOT_DEV}" =~ ^/dev/nvme[0-9]n1
 fi
 ROOT_TYPE=$(blkid "${ROOT_PART}" | sed -n 's|^.*TYPE="\(\S\+\)".*|\1|p')
 PTTYPE="$(blkid "${ROOT_DEV}" | sed -n 's|^.*PTTYPE="\(\S\+\)".*|\1|p')"
+# Capture partition identifiers so the recreated image keeps the source layout and PARTUUIDs.
 if [[ "${PTTYPE}" != "dos" && "${PTTYPE}" != "gpt" ]]; then
   errexit "Unsupported partition table type: ${PTTYPE}"
 fi
@@ -330,6 +371,7 @@ OPTIONS=()
 DYNAMIC_EXCLUDES=()
 EXTRACT=FALSE
 NOEXPAND=FALSE
+# Parse options before choosing interactive image creation or incremental update mode.
 while [ $# -gt 0 ]; do
   case "$1" in
 
@@ -382,6 +424,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 if [ "${IMGFILE}" = "" ]; then
+  # Without an image path, collect creation details and build a new two-partition image.
   if [ "${IMGNAME}" != "" ]; then
     IMGFILE="${IMGNAME}"
     IMGFILE="$(readlink -f "${IMGFILE}")"
@@ -468,11 +511,13 @@ if [ "${IMGFILE}" = "" ]; then
       errexit "Unable to delete existing image file"
     fi
   fi
+  # Allocate space for the boot partition and the requested root filesystem.
   truncate -s $(((${IRFSSIZE} + ${BOOTSIZE}) * ${ONEMB})) "${IMGFILE}"
   if [ $? -ne 0 ]; then
     errexit "Unable to create image file"
   fi
   if [ "${PTTYPE}" = "dos" ]; then
+    # Create a DOS or GPT partition table matching the running system.
     echo "label: dos" | sfdisk "${IMGFILE}" > /dev/null
     sfdisk "${IMGFILE}" <<EOF > /dev/null
 ,${BOOTSIZE}MiB,c
@@ -496,6 +541,7 @@ w
 y
 EOF
   fi
+  # Format both partitions before copying files into the image.
   mkloop
   mkfs.vfat -F 32 -n boot -s 4 "${LOOP}p1" &> /dev/null
   if [ $? -ne 0 ]; then
@@ -516,6 +562,7 @@ EOF
   rmloop
   echo ""
   echo "Starting full backup (for incremental backups, run: $0 ${IMGFILE})"
+  # Populate the new image, then shrink ext4 and its partition to the used size.
   backup
   if [ "${ROOT_TYPE}" != "f2fs" ]; then
     echo ""
@@ -553,6 +600,7 @@ EOF
 x
 i
 0x${PTUUID}
+    # NOOBS extraction requires boot and root references to use the image PARTUUIDs.
 r
 w
 EOF
@@ -578,6 +626,7 @@ y
 EOF
     fi
     if [ ${ADDMB} -ne 0 ]; then
+      # Optional incremental space is added after the compacted filesystem is checked.
       echo ""
       mkloop
       e2fsck -f -n "${LOOP}p2"
@@ -593,6 +642,7 @@ EOF
       rmloop
     fi
   fi
+  # Restore source directory timestamps that rsync cannot preserve during a live copy.
   mntimg
   while read DIR
   do
@@ -604,6 +654,7 @@ sed -n "s|^\.d\.\.t\.\.\.\.\.\.\s\+\(.*$\)|/\1|p")"
   umntimg
   echo ""
 else
+  # With an existing image path, mount it and update it in place for an incremental backup.
   IMGFILE="$(readlink -f "${IMGFILE}")"
   TARGET_DIR="$(dirname "${IMGFILE}")"
   TARGET_PART="$(df --output=source "${TARGET_DIR}" | tail -n 1)"

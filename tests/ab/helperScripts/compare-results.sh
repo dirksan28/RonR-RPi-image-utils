@@ -1,4 +1,13 @@
 #!/bin/bash
+# Compare candidate artifacts while ignoring expected runtime state from separate boots.
+#
+# Synopsis:
+#   Usage: compare-results.sh UPSTREAM_RESULT_DIR LOCAL_RESULT_DIR
+#   Expects both directories to contain the candidate manifests, normalized partition table,
+#   and local image-backup log produced by the A/B test.
+#   Writes unified differences and validation messages to stdout/stderr.
+#   Returns 0 when the normalized results match; returns 1 for differences or failed assertions,
+#   and 2 when either result directory is missing.
 set -euo pipefail
 
 UPSTREAM_DIR="${1:-}"
@@ -108,6 +117,7 @@ RUNTIME_EXCLUDE_PATTERNS=(
 
 # Build grep pattern for runtime exclusions
 build_runtime_exclude_pattern() {
+  # grep receives one expression so all exclusions are applied in a single pass.
   local pattern=""
   for p in "${RUNTIME_EXCLUDE_PATTERNS[@]}"; do
     if [ -n "${pattern}" ]; then
@@ -123,6 +133,7 @@ RUNTIME_EXCLUDE_PATTERN="$(build_runtime_exclude_pattern)"
 normalize_manifest() {
   local input_file="$1"
   local output_file="$2"
+  # Root manifests also omit fixture paths that intentionally point outside the image.
   # Exclude test fixtures AND runtime-changing files
   # Manifest format: path<spaces>type<spaces>perms<spaces>owner<spaces>group<spaces>size<spaces>target<spaces>hash
   # Fixture paths: opt/image-backup-ab-fixtures/bind-target/... and opt/image-backup-ab-fixtures/external-link...
@@ -138,6 +149,7 @@ compare_file() {
 }
 
 compare_root_manifests() {
+  # Normalize both root manifests before comparing their deterministic content.
    local upstream_manifest local_manifest
    upstream_manifest="$(mktemp)"
    local_manifest="$(mktemp)"
@@ -152,6 +164,7 @@ compare_root_manifests() {
 }
 
 compare_boot_manifests() {
+  # Boot has no root fixtures, so only runtime-changing entries are removed.
    local upstream_manifest local_manifest
    upstream_manifest="$(mktemp)"
    local_manifest="$(mktemp)"
@@ -169,6 +182,7 @@ compare_boot_manifests() {
 normalize_partition_table() {
   local input_file="$1"
   local output_file="$2"
+  # Replace candidate-specific image names while retaining partition geometry.
   # Normalize device path and partition references (upstream.img vs local.img) to generic placeholder
   sed -E \
       -e 's#device: /mnt/backup/.*\.img#device: /mnt/backup/IMAGE.img#' \
@@ -177,6 +191,7 @@ normalize_partition_table() {
 }
 
 compare_partition_tables() {
+  # Compare normalized partition layout separately from filesystem manifests.
    local upstream_table local_table
    upstream_table="$(mktemp)"
    local_table="$(mktemp)"
@@ -194,6 +209,7 @@ compare_root_manifests
 compare_boot_manifests
 compare_partition_tables
 
+# These assertions verify that the test exercised external mount and symlink exclusion behavior.
 grep -Fq 'opt/image-backup-ab-fixtures/bind-target/should-not-be-backed-up.txt' "${UPSTREAM_DIR}/root.manifest" || {
   echo "Upstream result did not include the external bind-mount fixture." >&2
   status=1

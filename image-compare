@@ -1,4 +1,12 @@
 #!/bin/bash
+# image-compare compares a running Raspbian system with a standard 'raw' image file
+# and displays the incremental changes that image-backup would perform.
+#
+# Synopsis:
+#   Usage: image-compare [options] pathto/imagefile
+#   -h,--help       This usage description
+#   -o,--options    Additional rsync options (comma separated)
+#   -u,--ubuntu     Ubuntu (Deprecated)
 
 trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
 
@@ -7,6 +15,7 @@ MNTPATH="${MY_TMP}/img-compare-mnt"
 
 errexit()
 {
+  # Unmount any image partitions and detach the loop device before exiting on error.
   echo ""
   echo -e "$1"
   echo ""
@@ -37,6 +46,7 @@ rmloop()
 
 mntimg()
 {
+  # Mount both image partitions so the dry-run comparison includes root and boot data.
   mkloop
   if [ ! -d "${MNTPATH}/" ]; then
     mkdir "${MNTPATH}/"
@@ -95,6 +105,7 @@ for PID in $(pidof -x -o %PPID "${PGMNAME}"); do
     errexit "${PGMNAME} is already running"
   fi
 done
+# image-compare delegates the change calculation to rsync's itemized dry-run mode.
 rsync --version &> /dev/null
 if [ $? -ne 0 ]; then
   errexit "rsync not installed (run: apt-get install rsync)"
@@ -102,6 +113,7 @@ fi
 BOOTMNT="${MNTPATH}$(sed -n '/^[[:space:]]*#/!s|^\S\+\s\+\(/boot\S*\)\s\+.*$|\1|p' /etc/fstab)"
 IMGFILE=""
 OPTIONS=()
+# Parse optional rsync exclusions before selecting the image to compare.
 while [ $# -gt 0 ]; do
   case "$1" in
 
@@ -132,6 +144,7 @@ while [ $# -gt 0 ]; do
 
   esac
 done
+# Keep prompting until a real image file is supplied.
 FLAG=0
 while :
 do
@@ -162,6 +175,7 @@ done
 mntimg
 sync
 echo ""
+# Show changes without modifying either the running system or the image.
 rsync -aDH --dry-run --itemize-changes --partial --numeric-ids --delete --force --exclude "${MNTPATH}" --exclude '/dev' --exclude '/lost+found' --exclude '/media' --exclude '/mnt' \
 --exclude '/proc' --exclude '/run' --exclude '/sys' --exclude '/tmp' --exclude '/var/swap' --exclude '/etc/udev/rules.d/70-persistent-net.rules' \
 --exclude '/var/lib/asterisk/astdb.sqlite3-journal' "${OPTIONS[@]}" / "${MNTPATH}/"
@@ -170,4 +184,5 @@ if [ $? -ne 0 ]; then
 fi
 echo ""
 sync
+# Unmount and detach the image after the comparison output is complete.
 umntimg

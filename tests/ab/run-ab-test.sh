@@ -1,4 +1,12 @@
 #!/bin/bash
+# Orchestrate the A/B test: prepare a guest, run both candidates, and compare their artifacts.
+#
+# Synopsis:
+#   Usage: run-ab-test.sh {prepare|preflight|cleanup|cleanall|initial|incremental|all}
+#   Actions prepare the guest, run validation or backup phases, clean test resources,
+#   and compare upstream and local image-backup results.
+#
+# check ./README.md for more details
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,19 +38,23 @@ export LANG=C
 export LANGUAGE=C
 export LC_ALL=C
 
+# Cleanup is delegated before normal test prerequisites are checked so it can recover a partial run.
 if [ "${ACTION}" = "cleanup" ] || [ "${ACTION}" = "clean" ] || [ "${ACTION}" = "cleanall" ]; then
   exec bash "${HELPER_DIR}/cleanup.sh" "${CONFIG_FILE}" "${ACTION}"
 fi
 
+# The remaining actions need a complete host and guest test environment.
 for required in BASE_IMAGE_SHA256 PREPARED_CACHE_DIR PREPARED_IMAGE KERNEL_IMAGE INITRAMFS_IMAGE GUEST_USER SSH_PRIVATE_KEY SSH_PUBLIC_KEY GUEST_WORKDIR GUEST_BACKUP_DIR GUEST_BACKUP_DEVICE BACKUP_DISK_SIZE_GB UPSTREAM_REPOSITORY UPSTREAM_REPO_DIR UPSTREAM_REVISION INITIAL_SIZE_MB ARTIFACT_DIR; do
   [ -n "${!required:-}" ] || { echo "Missing ${required} in ${CONFIG_FILE}" >&2; exit 2; }
 done
 [ -f "${PROJECT_DIR}/image-backup" ] || { echo "Local image-backup not found" >&2; exit 2; }
 
+# Fail early when a long-running QEMU test cannot have all required host tools.
 for command in git qemu-system-aarch64 qemu-img virt-customize guestfish virt-copy-out qemu-aarch64-static dpkg-deb ssh scp ssh-keygen curl xz sha256sum; do
   command -v "${command}" >/dev/null || { echo "Missing host command: ${command}" >&2; exit 1; }
 done
 
+# Disable user SSH configuration and known-host state for repeatable local test connections.
 SSH_TARGET="${GUEST_USER}@127.0.0.1"
 SSH_ARGS=(-F /dev/null -p "${SSH_PORT}" -i "${SSH_PRIVATE_KEY}" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=5)
 SCP_ARGS=(-F /dev/null -P "${SSH_PORT}" -i "${SSH_PRIVATE_KEY}" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=5)
@@ -55,11 +67,13 @@ CURRENT_CANDIDATE=""
 CURRENT_PHASE=""
 
 remote() {
+  # Keep every guest command on the same isolated SSH connection settings.
   ssh "${SSH_ARGS[@]}" "${SSH_TARGET}" "$@"
 }
 
 stop_guest() {
   if [ -n "${GUEST_PID}" ]; then
+    # Ask the guest to shut down cleanly, then reap QEMU even if SSH is unavailable.
     CURRENT_STAGE="stopping QEMU guest"
     remote "sudo -n poweroff" >/dev/null 2>&1 || true
     wait "${GUEST_PID}" || true
@@ -70,6 +84,7 @@ stop_guest() {
 finish_run() {
   local exit_code=$?
   trap - EXIT
+  # The EXIT trap preserves the failure stage and cleans up a guest left by an error.
   stop_guest
 
   if [ "${exit_code}" -eq 0 ]; then
@@ -93,6 +108,7 @@ trap finish_run EXIT
 
 wait_for_ssh() {
   local elapsed=0
+  # Poll until the guest is usable instead of assuming a fixed boot duration.
   until remote "true" >/dev/null 2>&1; do
     elapsed=$((elapsed + 2))
     [ "${elapsed}" -le "${SSH_WAIT_SECONDS:-300}" ] || {
@@ -111,6 +127,7 @@ start_guest() {
   local candidate_dir="${LOCAL_ARTIFACT_DIR}/${candidate}"
   CURRENT_STAGE="starting QEMU guest (${candidate})"
   log_message "[INFO] starting QEMU guest: ${candidate}"
+  # Each candidate gets a separate artifact directory and QEMU process.
   mkdir -p "${candidate_dir}"
   "${HELPER_DIR}/qemu-guest.sh" start "${candidate_dir}" "${PREPARED_IMAGE}" "${KERNEL_IMAGE}" "${INITRAMFS_IMAGE}" "${BACKUP_DISK_SIZE_GB}" "${SSH_PORT}" "${QEMU_MACHINE}" "${QEMU_MEMORY_MB}" "${QEMU_CPUS}" "${QEMU_EXTRA_ARGS[@]}" &
   GUEST_PID=$!
@@ -120,6 +137,7 @@ start_guest() {
 deploy_support() {
   CURRENT_STAGE="deploying guest support"
   log_message "[INFO] deploying guest support: ${CURRENT_CANDIDATE:-preflight}"
+  # Upload only the guest-side helpers and checker needed by the selected phase.
   remote "mkdir -p '${GUEST_WORKDIR}/bin' '${GUEST_WORKDIR}/artifacts'"
   scp "${SCP_ARGS[@]}" "${HELPER_DIR}/remote-run.sh" "${HELPER_DIR}/inspect-image.sh" "${PROJECT_DIR}/image-check" "${SSH_TARGET}:${GUEST_WORKDIR}/bin/"
   remote "chmod 755 '${GUEST_WORKDIR}/bin/'*.sh '${GUEST_WORKDIR}/bin/image-check'"
@@ -127,6 +145,7 @@ deploy_support() {
 
 preflight() {
   CURRENT_STAGE="preparing cache for preflight"
+  # Validate the prepared guest and backup disk before running either candidate.
   log_message "[INFO] preflight: preparing or reusing guest cache"
   prepare_cache
   log_message "[INFO] preflight: booting validation guest"
@@ -140,6 +159,7 @@ preflight() {
 
 prepare_cache() {
   CURRENT_STAGE="preparing guest cache"
+  # Build or reuse the guest image, then pin the exact upstream source revision.
   log_message "[INFO] prepare: building or reusing guest cache"
   "${HELPER_DIR}/prepare-raspios-virt.sh" "${CONFIG_FILE}"
   CURRENT_STAGE="pinning upstream source"
@@ -150,6 +170,7 @@ prepare_cache() {
 }
 
 prepare() {
+  # Preparation ends with a disposable boot validation of the newly built guest.
   prepare_cache
   log_message "[INFO] prepare: boot-validating prepared guest"
   start_guest prepared-boot-validation
@@ -161,6 +182,7 @@ prepare() {
 }
 
 prepare_upstream() {
+  # Keep the upstream checkout detached and exactly aligned with the configured revision.
   if [ ! -d "${UPSTREAM_REPO_DIR}/.git" ]; then
     git clone --no-checkout "${UPSTREAM_REPOSITORY}" "${UPSTREAM_REPO_DIR}"
   fi
@@ -192,6 +214,7 @@ run_candidate() {
 
   CURRENT_CANDIDATE="${candidate}"
   log_message "[INFO] ${candidate}: starting sequential candidate run"
+  # Run phases one candidate at a time so each starts with a known guest state.
   start_guest "${candidate}"
   deploy_support
   CURRENT_STAGE="preparing backup disk (${candidate})"
@@ -201,6 +224,7 @@ run_candidate() {
   log_message "[INFO] ${candidate}: uploading image-backup"
   scp "${SCP_ARGS[@]}" "${source_script}" "${SSH_TARGET}:${GUEST_WORKDIR}/bin/${candidate}-image-backup"
   remote "chmod 755 '${GUEST_WORKDIR}/bin/${candidate}-image-backup'"
+  # Initial is always run; incremental is included only when requested by the caller.
   for phase in initial incremental; do
     CURRENT_PHASE="${phase}"
     CURRENT_STAGE="running ${candidate} ${phase} backup"
@@ -210,6 +234,7 @@ run_candidate() {
     else
       local phase_status=$?
       log_message "[FAIL] ${candidate}/${phase} backup failed (exit ${phase_status})" >&2
+      # Preserve partial artifacts before returning so a failed phase remains diagnosable.
       CURRENT_STAGE="preserving partial ${candidate}/${phase} artifacts"
       scp -r "${SCP_ARGS[@]}" "${SSH_TARGET}:${GUEST_WORKDIR}/artifacts/${candidate}" "${LOCAL_ARTIFACT_DIR}/" >/dev/null 2>&1 || true
       return "${phase_status}"
@@ -227,6 +252,7 @@ compare_phase() {
   local report_file="${LOCAL_ARTIFACT_DIR}/${phase}-comparison.log"
   CURRENT_STAGE="comparing ${phase} results"
   log_message "[INFO] Comparing ${phase} results..."
+  # Keep the full diff in an artifact while reporting only the comparison result here.
   if "${HELPER_DIR}/compare-results.sh" "${LOCAL_ARTIFACT_DIR}/upstream/${phase}" "${LOCAL_ARTIFACT_DIR}/local/${phase}" > "${report_file}" 2>&1; then
     log_message "[PASS] ${phase} comparison"
     return 0

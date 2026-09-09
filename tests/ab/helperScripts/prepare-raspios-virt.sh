@@ -1,4 +1,26 @@
 #!/bin/bash
+# Build or reuse the prepared ARM guest image and boot artifacts used by the A/B tests.
+#
+# Synopsis:
+#   Usage: prepare-raspios-virt.sh CONFIG_FILE
+#   Expects a configuration containing source artifact URLs/checksums, cache paths,
+#   guest identity, and SSH key paths.
+#   Downloads or verifies inputs, then writes or reuses the prepared image, kernel,
+#   initramfs, SSH keys, and preparation manifest in the configured cache.
+#   Returns 0 when the cache is ready; returns nonzero for invalid inputs or preparation failure.
+#
+#   CONFIG_FILE is a sourced Bash file, for example:
+#     BASE_IMAGE_URL="https://example.invalid/base.img.xz"
+#     BASE_IMAGE_SHA256="..."
+#     PREPARED_CACHE_DIR="/path/to/tests/ab/cache"
+#     PREPARED_IMAGE="${PREPARED_CACHE_DIR}/prepared.img"
+#     KERNEL_IMAGE="${PREPARED_CACHE_DIR}/Image"
+#     INITRAMFS_IMAGE="${PREPARED_CACHE_DIR}/initrd.img"
+#     GUEST_USER="pi"
+#     SSH_PRIVATE_KEY="${PREPARED_CACHE_DIR}/keys/raspios-ab"
+#     SSH_PUBLIC_KEY="${SSH_PRIVATE_KEY}.pub"
+#     PREPARED_EXTRA_GB=2
+#   See tests/ab/config.example.env for the complete required configuration.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,6 +37,7 @@ export LANG=C
 export LANGUAGE=C
 export LC_ALL=C
 
+# Validate configuration and host tools before downloading or mounting anything.
 log_message() {
   printf '[%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
 }
@@ -26,6 +49,7 @@ for command in curl sha256sum xz qemu-img qemu-aarch64-static dpkg-deb ssh-keyge
   command -v "${command}" >/dev/null || { echo "Missing host command: ${command}" >&2; exit 1; }
 done
 umask 077
+# Keep test SSH credentials isolated and reject mismatched key pairs instead of replacing them.
 log_message "[INFO] prepare: checking isolated SSH key"
 mkdir -p "$(dirname "${SSH_PRIVATE_KEY}")"
 if [ -e "${SSH_PRIVATE_KEY}" ] && [ ! -f "${SSH_PUBLIC_KEY}" ]; then
@@ -49,6 +73,7 @@ mv "${SSH_PUBLIC_KEY}.actual" "${SSH_PUBLIC_KEY}"
 SSH_PUBLIC_KEY_SHA256="$(sha256sum "${SSH_PUBLIC_KEY}")"
 SSH_PUBLIC_KEY_SHA256="${SSH_PUBLIC_KEY_SHA256%% *}"
 
+# Downloads are cached by destination, but every cached artifact is still checksum-verified.
 mkdir -p "${PREPARED_CACHE_DIR}"
 SOURCE_IMAGE="${BASE_IMAGE:-${BASE_IMAGE_RAW}}"
 SOURCE_KERNEL_DEB="${KERNEL_DEB:-${PREPARED_CACHE_DIR}/linux-image-arm64.deb}"
@@ -77,6 +102,7 @@ fetch_artifact() {
 
 fetch_artifact "${BASE_IMAGE_ARCHIVE}" "${BASE_IMAGE_URL:-}" "${BASE_IMAGE_SHA256}"
 if [ -z "${BASE_IMAGE}" ]; then
+  # Expand the compressed base image only when no alternate local image was configured.
   log_message "[INFO] prepare: validating and expanding Raspberry Pi OS archive"
   xz -t "${BASE_IMAGE_ARCHIVE}"
   if [ ! -f "${BASE_IMAGE_RAW}" ]; then
@@ -85,6 +111,7 @@ if [ -z "${BASE_IMAGE}" ]; then
   fi
 fi
 fetch_artifact "${SOURCE_KERNEL_DEB}" "${KERNEL_DEB_URL:-}" "${KERNEL_DEB_SHA256}"
+# The guest must receive an ARM64 kernel package, not a host-architecture package.
 log_message "[INFO] prepare: validating kernel package"
 [ "$(dpkg-deb -f "${SOURCE_KERNEL_DEB}" Architecture)" = "arm64" ] || {
   echo "Kernel package is not an arm64 package: ${SOURCE_KERNEL_DEB}" >&2
@@ -92,6 +119,7 @@ log_message "[INFO] prepare: validating kernel package"
 }
 
 cache_manifest_matches() {
+  # All inputs that affect the guest image are recorded so stale cache reuse is avoided.
   local expected_field
   for expected_field in \
     "preparation_version=${PREPARATION_VERSION}" \
@@ -112,6 +140,7 @@ if [ -f "${PREPARED_IMAGE}" ] && [ -f "${KERNEL_IMAGE}" ] && [ -f "${INITRAMFS_I
 fi
 
 rm -f "${PREPARED_IMAGE}" "${KERNEL_IMAGE}" "${INITRAMFS_IMAGE}" "${MANIFEST_FILE}"
+# Rebuild the image when any preparation input changed since the last run.
 log_message "[INFO] prepare: creating expanded prepared image"
 cp --reflink=auto "${SOURCE_IMAGE}" "${PREPARED_IMAGE}"
 truncate -s "+${PREPARED_EXTRA_GB}G" "${PREPARED_IMAGE}"
@@ -121,6 +150,7 @@ KERNEL_STAGE="$(mktemp -d)"
 ROOT_MOUNT="$(mktemp -d)"
 LOOP_DEVICE=""
 cleanup() {
+  # Teardown handles mounts created inside the chroot as well as the image loop device.
   mountpoint -q "${ROOT_MOUNT}" && sudo umount --recursive "${ROOT_MOUNT}" || true
   if [ -n "${LOOP_DEVICE}" ]; then
     while read -r mount_target; do
@@ -138,6 +168,7 @@ KERNEL_PATH="$(find "${KERNEL_STAGE}/boot" -maxdepth 1 -type f -name 'vmlinuz-*'
 KERNEL_VERSION="$(basename "${KERNEL_PATH}")"
 KERNEL_VERSION="${KERNEL_VERSION#vmlinuz-}"
 
+# Grow the root partition and filesystem before provisioning the guest contents.
 LOOP_DEVICE="$(sudo losetup --find --show --partscan "${PREPARED_IMAGE}")"
 log_message "[INFO] prepare: growing prepared root filesystem"
 sudo e2fsck -pf "${LOOP_DEVICE}p2"
@@ -148,12 +179,14 @@ sudo mount --rbind /sys "${ROOT_MOUNT}/sys"
 sudo mount --make-rslave "${ROOT_MOUNT}/sys"
 sudo mount --rbind /dev "${ROOT_MOUNT}/dev"
 sudo mount --make-rslave "${ROOT_MOUNT}/dev"
+# Install the emulator and package inputs so the ARM chroot can be provisioned on the host.
 sudo install -m 755 "$(command -v qemu-aarch64-static)" "${ROOT_MOUNT}/usr/bin/qemu-aarch64-static"
 sudo install -m 644 "${SOURCE_KERNEL_DEB}" "${ROOT_MOUNT}/tmp/$(basename "${SOURCE_KERNEL_DEB}")"
 sudo install -m 644 "${SSH_PUBLIC_KEY}" "${ROOT_MOUNT}/tmp/$(basename "${SSH_PUBLIC_KEY}")"
 sudo rm -f "${ROOT_MOUNT}/etc/resolv.conf"
 sudo cp /etc/resolv.conf "${ROOT_MOUNT}/etc/resolv.conf"
 
+# Install backup tools, configure SSH access, and write the preparation manifest in the guest.
 log_message "[INFO] prepare: provisioning ARM guest packages and SSH"
 sudo chroot "${ROOT_MOUNT}" /usr/bin/qemu-aarch64-static /bin/bash -ceu "
   export LANG=C
@@ -195,6 +228,7 @@ EOF
   printf 'preparation_version=%s\\nbase_image_sha256=%s\\nkernel_deb_sha256=%s\\nkernel_version=%s\\nprepared_extra_gb=%s\\nguest_user=%s\\nssh_public_key_sha256=%s\\n' '${PREPARATION_VERSION}' '${BASE_IMAGE_SHA256}' '${KERNEL_DEB_SHA256}' '${KERNEL_VERSION}' '${PREPARED_EXTRA_GB}' '${GUEST_USER}' '${SSH_PUBLIC_KEY_SHA256}' > /etc/image-backup-ab-manifest
 "
 
+# QEMU boots directly from these extracted kernel artifacts rather than the guest bootloader.
 sudo install -m 644 "${ROOT_MOUNT}/boot/vmlinuz-${KERNEL_VERSION}" "${KERNEL_IMAGE}"
 sudo install -m 644 "${ROOT_MOUNT}/boot/initrd.img-${KERNEL_VERSION}" "${INITRAMFS_IMAGE}"
 sudo chown "$(id -u):$(id -g)" "${KERNEL_IMAGE}" "${INITRAMFS_IMAGE}"

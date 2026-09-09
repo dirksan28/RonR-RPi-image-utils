@@ -1,4 +1,10 @@
 #!/bin/bash
+# image-info displays information about a standard 'raw' image file.
+#
+# Synopsis:
+#   Usage: image-info [options] pathto/imagefile
+#   -h,--help       This usage description
+#   -u,--ubuntu     Ubuntu (Deprecated)
 
 trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
 
@@ -7,6 +13,7 @@ MNTPATH="${MY_TMP}/img-info-mnt"
 
 errexit()
 {
+  # Remove temporary mounts and loop devices before reporting a fatal error.
   echo ""
   echo -e "$1"
   echo ""
@@ -21,6 +28,7 @@ errexit()
 
 mkloop()
 {
+  # Expose the image partitions as loop devices for mounting and inspection.
   LOOP="$(losetup -f --show -P "${IMGFILE}")"
   if [ $? -ne 0 ]; then
     errexit "Unable to create loop device"
@@ -29,6 +37,7 @@ mkloop()
 
 rmloop()
 {
+  # Release the loop device after all image information has been collected.
   if [ "${LOOP}" != "" ]; then
     losetup -d "${LOOP}"
     LOOP="" 
@@ -37,6 +46,7 @@ rmloop()
 
 mntimg()
 {
+  # Mount root first, then derive the boot mount path from the image's fstab.
   mkloop
   if [ ! -d "${MNTPATH}/" ]; then
     mkdir "${MNTPATH}/"
@@ -64,6 +74,7 @@ mntimg()
 
 umntimg()
 {
+  # Unmount both partitions before removing the temporary mountpoint.
   umount "${BOOTMNT}/"
   if [ $? -ne 0 ]; then
     errexit "Unable to unmount image BOOT partition"
@@ -86,6 +97,7 @@ usage()
 
 LOOP=""
 MNTED=FALSE
+# Image partitions are accessed through loop devices and require root privileges.
 if [ $(id -u) -ne 0 ]; then
   errexit "$0 must be run as root user"
 fi
@@ -96,6 +108,7 @@ for PID in $(pidof -x -o %PPID "${PGMNAME}"); do
   fi
 done
 IMGFILE=""
+# Parse the image path while retaining the legacy Ubuntu option for compatibility.
 while [ $# -gt 0 ]; do
   case "$1" in
 
@@ -118,6 +131,7 @@ while [ $# -gt 0 ]; do
 
   esac
 done
+  # Keep prompting until the user supplies an existing image file rather than a directory.
 FLAG=0
 while :
 do
@@ -146,6 +160,7 @@ do
   fi
 done
 mntimg
+# Show the image file and mounted filesystem sizes and types.
 echo ""
 ls -l "${IMGFILE}"
 echo ""
@@ -154,8 +169,10 @@ echo "$(sed -n 's|^\(.*\)\s\+Mounted on.*|\1|p' <<< ${INFO})"
 echo "$(sed -n "s|^${LOOP}p1\(.*\)\s\+${MNTPATH}.*|boot        \1|p" <<< ${INFO})"
 echo "$(sed -n "s|^${LOOP}p2\(.*\)\s\+${MNTPATH}.*|root        \1|p" <<< ${INFO})"
 echo ""
+# Report disk, boot-partition, and root-partition identifiers from blkid.
 echo "$(blkid ${LOOP} | sed -n "s|^${LOOP}:\s*\(.*\)|disk: \1|p")"
 echo "$(blkid ${LOOP}p1 | sed -n "s|^${LOOP}p1:\s*\(.*\)|boot: \1|p")"
 echo "$(blkid ${LOOP}p2 | sed -n "s|^${LOOP}p2:\s*\(.*\)|root: \1|p")"
 echo""
+# Finish by unmounting both partitions and detaching the loop device.
 umntimg

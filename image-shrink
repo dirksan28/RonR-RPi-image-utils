@@ -1,7 +1,14 @@
 #!/bin/bash
+# image-shrink shrinks a standard 'raw' image file to its smallest possible size,
+# plus an optional amount of additional free space.
+#
+# Synopsis:
+#   Usage: image-shrink imagefile [Additional MB]
+#   Additional MB is an optional amount of free space to add.
 
 mkloop()
 {
+  # Attach the image and expose partition 2 for filesystem sizing operations.
   LOOP="$(losetup -f --show -P "${IMGFILE}")"
   if [ $? -ne 0 ]; then
     errexit "Unable to create loop device"
@@ -10,23 +17,27 @@ mkloop()
 
 rmloop()
 {
+  # Release the loop device after each filesystem operation phase.
    losetup -d "${LOOP}"
 }
 
 fsckerr()
 {
+  # Report which resize-stage check failed after releasing the loop device.
   rmloop
   errexit "Filesystem appears corrupted "$1" resize2fs"
 }
 
 errexit()
 {
+  # Keep fatal error output consistent for this destructive image operation.
   echo ""
   echo "$1"
   echo ""
   exit 1
 }
 
+# Shrinking changes filesystems and partition tables, so require root.
 if [ $(id -u) -ne 0 ]; then
   errexit "$0 must be run as root user"
 fi
@@ -59,6 +70,7 @@ if [ $? -eq 127 ]; then
   apt-get install gdisk
 fi
 IMGFILE="$1"
+# Validate the image before attaching it to a loop device.
 if [ "${IMGFILE}" = "" ]; then
   errexit "Usage: $0 imagefile [Additional MB]"
 fi
@@ -68,10 +80,12 @@ fi
 mkloop
 FS_TYPE=$(blkid "${LOOP}p2" | sed -n 's|^.*TYPE="\(\S\+\)".*|\1|p')
 rmloop
+# This utility relies on ext-family shrinking; F2FS cannot be reduced here.
 if [ "${FS_TYPE}" = "f2fs" ]; then
   errexit "Cannot shrink F2FS filesystem"
 fi
 answer="$2"
+# Normalize the optional extra-space argument before asking for confirmation.
 if [[ ! "${answer}" =~ ^[0-9]+$ ]]; then
   echo ""
   while :
@@ -89,6 +103,7 @@ if [ ${#answer} -eq 0 ]; then
   answer=0
 fi
 ADDMB=${answer}
+# Confirm the requested destructive resize before modifying the image.
 echo ""
 echo -n "Shrink ${IMGFILE} [Additional MB = ${ADDMB}] (y/n)? "
 while read -r -n 1 -s answer; do
@@ -103,6 +118,7 @@ while read -r -n 1 -s answer; do
 done
 echo ""
 INFO="$(sfdisk -d "${IMGFILE}")"
+# Capture partition boundaries and identifiers so the rewritten table remains bootable.
 BOOTBEG=$(sed -n "s|^${IMGFILE}1\s\+:.*start=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
 BOOTEND=$((${BOOTBEG} + $(sed -n "s|^${IMGFILE}1\s\+:.*size=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}") - 1))
 ROOTBEG=$(sed -n "s|^${IMGFILE}2\s\+:.*start=\s*\([0-9]\+\).*$|\1|p" <<< "${INFO}")
@@ -113,12 +129,14 @@ PTTYPE="$(sed -n "s|^label: \(\S\+\).*$|\1|p" <<< "${INFO}")"
 if [[ "${PTTYPE}" != "dos" && "${PTTYPE}" != "gpt" ]]; then
   errexit "Unsupported partition table type: ${PTTYPE}"
 fi
+# Verify the root filesystem before shrinking it.
 mkloop
 e2fsck -f -n "${LOOP}p2"
 if [ $? -ne 0 ]; then
   fsckerr "before"
 fi
 echo ""
+# Reduce ext4 to its minimum size; repeated calls preserve compatibility with the original workflow.
 resize2fs -f -M "${LOOP}p2"
 resize2fs -f -M "${LOOP}p2"
 resize2fs -f -M "${LOOP}p2"
@@ -130,15 +148,19 @@ INFO="$(tune2fs -l "${LOOP}p2" 2>/dev/null)"
 rmloop
 NEWSIZE=$(sed -n 's|^Block count:\s*\(.*\)|\1|p' <<< "${INFO}")
 BLKSIZE=$(sed -n 's|^Block size:\s*\(.*\)|\1|p' <<< "${INFO}")
+# Convert the filesystem size and requested free space into the new image end sector.
 NEWEND=$((${ROOTBEG} + (${NEWSIZE} * (${BLKSIZE} / 512)) + ((${ADDMB} * 1024 * 1024) / 512) - 1))
 if [ "${PTTYPE}" = "gpt" ]; then
   ((NEWEND += 33))
 fi
+# Truncate the image before recreating its smaller partition layout.
 truncate -s $(((${NEWEND} + 1) * 512)) "${IMGFILE}"
 if [ "${PTTYPE}" = "dos" ]; then
+  # DOS keeps the existing disk identifier while resizing partition 2 in place.
   sfdisk --delete "${IMGFILE}" 2 > /dev/null
   echo "${ROOTBEG},+" | sfdisk -N2 "${IMGFILE}" &> /dev/null
 else
+  # GPT is rebuilt with the original boundaries, UUIDs, and disk identifier preserved.
   sgdisk -Z "${IMGFILE}" &> /dev/null
   sgdisk -n 1:${BOOTBEG}:${BOOTEND} "${IMGFILE}" &> /dev/null
   sgdisk -t 1:0700 "${IMGFILE}" > /dev/null
@@ -160,6 +182,7 @@ y
 EOF
 fi
 if [ ${ADDMB} -ne 0 ]; then
+  # If extra space was requested, grow the filesystem to use that reserved partition space.
   echo ""
   mkloop
   e2fsck -f -n "${LOOP}p2"

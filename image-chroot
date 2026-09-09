@@ -1,4 +1,12 @@
 #!/bin/bash
+# image-chroot performs a Linux chroot to an image file. The current user is root,
+# the current directory is / in the image, and the host root filesystem is at /host-root-fs.
+# Use exit or Ctrl-D to terminate the chroot.
+#
+# Synopsis:
+#   Usage: image-chroot [options] pathto/imagefile
+#   -h,--help       This usage description
+#   -u,--ubuntu     Ubuntu (Deprecated)
 
 trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
 
@@ -7,6 +15,7 @@ MNTPATH="${MY_TMP}/image-chroot-mnt"
 
 errexit()
 {
+  # Unmount the image and remove temporary state before reporting a fatal error.
   echo ""
   echo -e "$1"
   echo ""
@@ -21,6 +30,7 @@ errexit()
 
 mkloop()
 {
+  # Expose image partitions as loop devices so they can be mounted separately.
   LOOP="$(losetup -f --show -P "${IMGFILE}")"
   if [ $? -ne 0 ]; then
     errexit "Unable to create loop device"
@@ -37,6 +47,7 @@ rmloop()
 
 mntimg()
 {
+  # Mount root first, then derive and mount the image's configured boot path.
   mkloop
   if [ ! -d "${MNTPATH}/" ]; then
     mkdir "${MNTPATH}/"
@@ -64,6 +75,7 @@ mntimg()
 
 umntimg()
 {
+  # Unmount boot before root, then detach the loop device and remove the mountpoint.
   umount "${BOOTMNT}/"
   if [ $? -ne 0 ]; then
     errexit "Unable to unmount image BOOT partition"
@@ -86,6 +98,7 @@ usage()
 
 LOOP=""
 MNTED=FALSE
+# A chroot needs root privileges and must not overlap another instance of this script.
 if [ $(id -u) -ne 0 ]; then
   errexit "Must be run as root user: sudo $0"
 fi
@@ -104,6 +117,7 @@ if [ $? -eq 127 ]; then
   apt-get install file
 fi
 IMGFILE=""
+# Parse the image path; the legacy Ubuntu option is accepted for compatibility.
 while [ $# -gt 0 ]; do
   case "$1" in
 
@@ -133,6 +147,7 @@ if [ ! -f "${IMGFILE}" ]; then
   errexit "${IMGFILE} not found"
 fi
 mntimg
+# Compare host and image architectures before entering the chroot.
 SYS="$(file -b /bin/bash | sed -n 's|^.*, \(ARM\s*\S*\),.*$|\1|p')"
 IMG="$(file -b ${MNTPATH}/bin/bash | sed -n 's|^.*, \(ARM\s*\S*\),.*$|\1|p')"
 umntimg
@@ -140,6 +155,7 @@ if [ "${SYS}" != "${IMG}" ]; then
   errexit "${IMGFILE} architecture differs from system architecture"
 fi
 echo ""
+# Confirm the interactive chroot because commands run there as root.
 echo -n "chroot to ${IMGFILE} (y/n)? "
 while read -r -n 1 -s answer; do
   if [[ ${answer} = [yYnN] ]]; then
@@ -157,13 +173,16 @@ echo "Host root filesystem is available at /host-root-fs"
 echo "Use exit or ^D to terminate chroot"
 echo ""
 mntimg
+# Make the host root and pseudo-filesystems available inside the image.
 mkdir "${MNTPATH}/host-root-fs"
 mount --bind / "${MNTPATH}/host-root-fs"
 mount --bind /dev "${MNTPATH}/dev"
 mount --bind /sys "${MNTPATH}/sys"
 mount --bind /proc "${MNTPATH}/proc"
 mount --bind /dev/pts "${MNTPATH}/dev/pts"
+# Run the requested shell environment; control returns here when the user exits.
 chroot "${MNTPATH}"
+# Remove temporary bind mounts and any mounts created inside the chroot.
 umount "${MNTPATH}/dev/pts" "${MNTPATH}/proc" "${MNTPATH}/sys" "${MNTPATH}/dev"
 while read MNTPT
 do
@@ -171,6 +190,7 @@ do
     umount "${MNTPT}"
   fi
 done <<< "$(findmnt -lR ${MNTPATH} | sed -n "s|^\(${MNTPATH}/\S\+\)\s\+.*$|\1|p")"
+# Unmount the host view and finish the normal image cleanup.
 umount "${MNTPATH}/host-root-fs"
 rmdir "${MNTPATH}/host-root-fs"
 umntimg

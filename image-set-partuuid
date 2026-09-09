@@ -1,4 +1,9 @@
 #!/bin/bash
+# image-set-partuuid sets the ROOT partition PARTUUID of a standard 'raw' image file.
+#
+# Synopsis:
+#   Usage: image-set-partuuid imagefile [hhhhhhhh-02 | hhhhhhhh-hhhh-hhhh-hhhh-hhhhhhhhhhhh | random]
+#   With no PARTUUID, the current ROOT PARTUUID is displayed.
 
 trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
 
@@ -7,6 +12,7 @@ MNTPATH="${MY_TMP}/img-set-partuuid-mnt"
 
 errexit()
 {
+  # Restore mounts and detach the loop device before reporting an error.
   echo ""
   echo "$1"
   echo ""
@@ -21,6 +27,7 @@ errexit()
 
 mkloop()
 {
+  # Expose the image partitions so the root filesystem can be checked before edits.
   LOOP="$(losetup -f --show -P "${IMGFILE}")"
   if [ $? -ne 0 ]; then
     errexit "Unable to create loop device"
@@ -37,6 +44,7 @@ rmloop()
 
 mntimg()
 {
+  # Mount root first, then locate and mount the boot partition from fstab.
   mkloop
   if [ ! -d "${MNTPATH}/" ]; then
     mkdir "${MNTPATH}/"
@@ -64,6 +72,7 @@ mntimg()
 
 umntimg()
 {
+  # Unmount both partitions before releasing the image loop device.
   umount "${BOOTMNT}/"
   if [ $? -ne 0 ]; then
     errexit "Unable to unmount image BOOT partition"
@@ -79,6 +88,7 @@ umntimg()
 
 LOOP=""
 MNTED=FALSE
+# PARTUUID changes rewrite partition metadata and boot configuration, so require root.
 if [ $(id -u) -ne 0 ]; then
   errexit "$0 must be run as root user"
 fi
@@ -112,6 +122,7 @@ if [ $? -eq 127 ]; then
 fi
 IMGFILE="$1"
 PARTUUID="$2"
+# Read the image partition table before validating the requested identifier format.
 if [ "${IMGFILE}" = "" ]; then
   errexit "Usage: $0 imagefile [ hhhhhhhh-02 | hhhhhhhh-hhhh-hhhh-hhhh-hhhhhhhhhhhh | random ]"
 fi
@@ -119,6 +130,7 @@ if [ ! -f "${IMGFILE}" ]; then
   errexit "${IMGFILE} not found"
 fi
 INFO="$(sfdisk -d "${IMGFILE}")"
+# DOS uses a disk identifier plus partition suffixes; GPT stores full per-partition UUIDs.
 PTTYPE="$(sed -n "s|^label: \(\S\+\).*$|\1|p" <<< "${INFO}")"
 if [[ "${PTTYPE}" != "dos" && "${PTTYPE}" != "gpt" ]]; then
   errexit "Unsupported partition table type: ${PTTYPE}"
@@ -137,6 +149,7 @@ ORIGUUID="$(tr [A-Z] [a-z] <<< "${ORIGUUID}")"
 ORIGUUID_1="$(tr [A-Z] [a-z] <<< "${ORIGUUID_1}")"
 ORIGUUID_2="$(tr [A-Z] [a-z] <<< "${ORIGUUID_2}")"
 if [ "${PARTUUID}" = "" ]; then
+  # With no replacement requested, report the current root PARTUUID and leave the image unchanged.
   PARTUUID="${ORIGUUID}"
 else
   PARTUUID="$(tr [A-Z] [a-z] <<< "${PARTUUID}")"
@@ -144,6 +157,7 @@ else
 ("${PTTYPE}" = "gpt" && ! "${PARTUUID}" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$)) ]]; then
     errexit "Invalid PARTUUID: ${PARTUUID}"
   fi
+  # Check the root filesystem before changing partition metadata.
   echo ""
   echo -n "Set PARTUUID on ${IMGFILE} to ${PARTUUID} (y/n)? "
   while read -r -n 1 -s answer; do
@@ -168,6 +182,7 @@ else
   fi
   rmloop
   if [ "${PTTYPE}" = "dos" ]; then
+    # For DOS, changing the root PARTUUID means changing the shared disk identifier.
     if [ "${PARTUUID}" = "random" ]; then
       PTUUID="$(hexdump -n 4 -e '"%08X"' /dev/random | tr [A-Z] [a-z])"
     else
@@ -181,12 +196,14 @@ r
 w
 EOF
   else
+    # GPT can assign a new UUID directly to partition 2.
     if [ "${PARTUUID}" = "random" ]; then
       sgdisk -u 2:'R' "${IMGFILE}" > /dev/null
     else
       sgdisk -u 2:${PARTUUID} "${IMGFILE}" > /dev/null
     fi
   fi
+  # Ask the kernel to reread the updated partition table, then obtain final UUID values.
   partprobe
   INFO="$(sfdisk -d "${IMGFILE}")"
   if [ "${PTTYPE}" = "dos" ]; then
@@ -203,6 +220,7 @@ EOF
   PARTUUID_1="$(tr [A-Z] [a-z] <<< "${PARTUUID_1}")"
   PARTUUID_2="$(tr [A-Z] [a-z] <<< "${PARTUUID_2}")"
   mntimg
+  # Keep fstab and the boot command line aligned with the new partition UUIDs.
   sed -i "/^[[:space:]]*#/!s|^\(PARTUUID=\)${ORIGUUID_1}\(\s\+/boot\S*\s\+vfat\s\+.*\)$|\1${PARTUUID_1}\2|" "${MNTPATH}/etc/fstab"
   sed -i "/^[[:space:]]*#/!s|^\(PARTUUID=\)${ORIGUUID_2}\(\s\+/\s\+.*\)$|\1${PARTUUID_2}\2|" "${MNTPATH}/etc/fstab"
   sed -i "/^[[:space:]]*#/!s|^\(.*root=PARTUUID=\)${ORIGUUID_2}\(\s\+.*\)$|\1${PARTUUID_2}\2|" "${BOOTMNT}/cmdline.txt"

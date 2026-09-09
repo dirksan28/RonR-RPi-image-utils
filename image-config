@@ -1,4 +1,10 @@
 #!/bin/bash
+# image-config customizes an image file with a user account/password, WiFi credentials,
+# and SSH status.
+#
+# Synopsis:
+#   Usage: image-config pathto/imagefile
+#   Configures a user account/password, WiFi credentials, and SSH status.
 
 trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
 
@@ -8,6 +14,7 @@ MNTPATH="${MY_TMP}/image-config-mnt"
 errexit()
 {
   echo ""
+  # Remove temporary mounts and loop devices before aborting configuration.
   echo -e "$1"
   echo ""
   if [ "${MNTED}" = "TRUE" ]; then
@@ -21,6 +28,7 @@ errexit()
 
 mkloop()
 {
+  # Attach the image and expose both partitions for configuration changes.
   LOOP="$(losetup -f --show -P "${IMGFILE}")"
   if [ $? -ne 0 ]; then
     errexit "Unable to create loop device"
@@ -37,6 +45,7 @@ rmloop()
 
 mntimg()
 {
+  # Mount root first, then read its fstab to locate the boot partition.
   mkloop
   if [ ! -d "${MNTPATH}/" ]; then
     mkdir "${MNTPATH}/"
@@ -65,6 +74,7 @@ mntimg()
 
 umntimg()
 {
+  # Flush configuration changes by unmounting boot, root, and the loop device.
   umount "${BOOTMNT2}/"
   if [ $? -ne 0 ]; then
     errexit "Unable to unmount image BOOT partition"
@@ -86,6 +96,7 @@ usage()
 
 LOOP=""
 MNTED=FALSE
+# Configuration changes alter a mounted image and therefore require root.
 if [ $(id -u) -ne 0 ]; then
   errexit "Must be run as root user: sudo $0"
 fi
@@ -114,12 +125,14 @@ while [ $# -gt 0 ]; do
 
   esac
 done
+# Validate the target image before collecting interactive settings.
 if [ "${IMGFILE}" = "" ]; then
   errexit "No image file specified"
 fi
 if [ ! -f "${IMGFILE}" ]; then
   errexit "${IMGFILE} not found"
 fi
+# Validate the optional account name before asking for its password.
 while :
 do
   echo ""
@@ -156,6 +169,7 @@ if [ "${USERACCT}" != "" ]; then
     fi
   done
 fi
+# Read optional WiFi settings as one quoted SSID/password/country value.
 while :
 do
   echo ""
@@ -176,6 +190,7 @@ do
     break
   fi
 done
+# SSH is configured as a simple yes/no boot flag.
 echo ""
 echo -n "Enable SSH (y/n)? "
 while read -r -n 1 -s answer; do
@@ -189,6 +204,7 @@ while read -r -n 1 -s answer; do
     break
   fi
 done
+# Show the requested changes once before writing them into the image.
 echo ""
 if [ "${USERACCT}" != "" ]; then
   echo "User account: ${USERACCT}"
@@ -219,8 +235,10 @@ while read -r -n 1 -s answer; do
   fi
 done
 mntimg
+# Remove stale first-boot configuration so the new settings are authoritative.
 rm "${BOOTMNT2}/userconf" "${BOOTMNT2}/userconf.txt" &> /dev/null
 if [ "${USERACCT}" != "" ]; then
+  # Raspberry Pi OS consumes the account and hashed password from userconf.
   ENCPWD="$(echo ${USERPASS} | openssl passwd -6 -stdin)"
   echo "${USERACCT}:${ENCPWD}" > "${BOOTMNT2}/userconf"
 fi
@@ -230,6 +248,7 @@ rm -r "${MNTPATH}/etc/NetworkManager/system-connections/"
 mkdir "${MNTPATH}/etc/NetworkManager/system-connections/"
 rm "${BOOTMNT2}/wpa_supplicant.conf" &> /dev/null
 if [ "${WPA_CONF}" != "" ]; then
+  # Newer releases use NetworkManager; older releases receive wpa_supplicant.conf.
   OSVER="$(sed -n 's|^VERSION=".*(\(.*\))"|\1|p' ${MNTPATH}/etc/os-release)"
   if [[ "${OSVER}" = "trixie" || "${OSVER}" = "bookworm" ]]; then
     cat <<EOF > "${MNTPATH}/etc/NetworkManager/system-connections/${WPA_SSID}.nmconnection"
@@ -280,6 +299,7 @@ EOF
   fi
 fi
 rm "${BOOTMNT2}/ssh" "${BOOTMNT2}/ssh.txt" &> /dev/null
+# The presence of /boot/ssh enables the SSH service on first boot.
 if [ "${SSH}" = "TRUE" ]; then
   touch "${BOOTMNT2}/ssh"
 fi

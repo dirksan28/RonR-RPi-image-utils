@@ -1,4 +1,11 @@
 #!/bin/bash
+# Mount a disk image read-only and write deterministic manifests for its partitions.
+#
+# Synopsis:
+#   Usage: inspect-image.sh IMAGE_FILE OUTPUT_DIR
+#   Expects a raw disk image with boot partition 1 and root partition 2; runs as root.
+#   Writes root.manifest, boot.manifest, and partition-table.normalized.txt to OUTPUT_DIR.
+#   Reports progress on stderr and returns 0 on success or a nonzero status on inspection failure.
 set -euo pipefail
 
 IMAGE_FILE="${1:-}"
@@ -14,6 +21,7 @@ ROOT_MOUNT="$(mktemp -d)"
 BOOT_MOUNT="$(mktemp -d)"
 LOOP_DEVICE=""
 cleanup() {
+  # Always remove mounts, the loop device, and temporary mountpoint directories.
   mountpoint -q "${BOOT_MOUNT}" && umount "${BOOT_MOUNT}" || true
   mountpoint -q "${ROOT_MOUNT}" && umount "${ROOT_MOUNT}" || true
   [ -n "${LOOP_DEVICE}" ] && losetup -d "${LOOP_DEVICE}" || true
@@ -44,6 +52,7 @@ manifest() (
   local progress_interval="${INSPECT_PROGRESS_INTERVAL:-30}"
   local progress_entries="${INSPECT_PROGRESS_ENTRIES:-5000}"
 
+  # Hash regular files in parallel, then combine hashes with metadata in one ordered scan.
   declare -A hash_by_path=()
 
   cleanup_manifest_files() {
@@ -68,6 +77,7 @@ manifest() (
 
   : > "${output_file}"
   progress_message "inspect ${filesystem_name}: hashing regular files with ${hash_jobs} workers"
+  # Separate worker files avoid interleaved writes while xargs runs hash jobs in parallel.
   if ! find "${mount_dir}" -xdev -type f -print0 | \
     xargs -0 -r -P "${hash_jobs}" --process-slot-var=HASH_SLOT \
       sh -c 'sha256sum --zero -- "$@" >> "${HASH_WORKER_DIR}/worker.${HASH_SLOT}"' sh; then
@@ -96,12 +106,14 @@ manifest() (
     hash_by_path["${hash_path}"]="${hash_value}"
   done < "${hash_cache}"
 
+  # Capture metadata separately so the final records can use the previously computed hashes.
   if ! find "${mount_dir}" -xdev -printf '%p\t%y\t%F\t%m\t%u\t%g\t%s\n' > "${metadata_cache}"; then
     progress_message "inspect ${filesystem_name}: metadata scan failed"
     exit 1
   fi
 
   progress_message "inspect ${filesystem_name}: starting scan"
+  # Convert absolute find output to relative, type-aware manifest records.
   while IFS=$'\t' read -r entry entry_type filesystem_type mode uid gid size; do
     entry_count=$((entry_count + 1))
     relative_path="${entry#${mount_dir}/}"
@@ -144,6 +156,7 @@ manifest() (
       last_report_count="${entry_count}"
     fi
   done < "${metadata_cache}" > "${manifest_unsorted}"
+  # Sorting makes comparisons independent of filesystem traversal order.
   LC_ALL=C sort "${manifest_unsorted}" > "${output_file}"
   elapsed=$((SECONDS - start_time))
   progress_message "inspect ${filesystem_name}: completed; ${entry_count} entries processed, ${regular_file_count} regular files hashed, elapsed ${elapsed}s"
@@ -152,4 +165,5 @@ manifest() (
 mkdir -p "${OUTPUT_DIR}"
 manifest "${ROOT_MOUNT}" "${OUTPUT_DIR}/root.manifest" root
 manifest "${BOOT_MOUNT}" "${OUTPUT_DIR}/boot.manifest" boot
+# Normalize volatile partition identifiers before the result comparison.
 sfdisk --dump "${IMAGE_FILE}" | sed -E '/^label-id:/d; s/, uuid=[^,]+//' > "${OUTPUT_DIR}/partition-table.normalized.txt"
