@@ -44,6 +44,13 @@ Do not modify existing documentation for an internal refactor, comment-only clea
 
 Keep the human-facing `README.md` coherent and consolidated. Prefer updating the existing section that owns the topic over adding a new fragment, and do not duplicate the same guidance in multiple scattered sections. Avoid broad README rewrites, formatting churn, and unrelated corrections while changing an image utility.
 
+## Language and Generated Artifacts
+
+- Keep edited and generated executable code in Bash or another shell-script form consistent with the repository's existing utilities.
+- Do not add Python, Perl, Node.js, or other non-shell source files, generated guest helpers, fixtures, or tooling when the task can be implemented in shell.
+- A one-off non-shell command is acceptable for read-only host inspection or validation only when it creates no repository artifact; do not turn it into a checked-in helper or generated file.
+- If a non-shell source or generated artifact is genuinely unavoidable, stop before creating it and prompt the user for explicit approval, explaining why shell is insufficient and what would be added.
+
 ## Implementation and Validation
 
 - Preserve Bash syntax and the existing public command-line interface unless the task explicitly changes it.

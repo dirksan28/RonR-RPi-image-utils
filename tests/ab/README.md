@@ -84,6 +84,15 @@ After an interrupted or failed run, clean the runtime state without deleting res
 ./run-ab-test.sh cleanup
 ```
 
+`cleanup` stops active test runners and their test-owned QEMU guests before unmounting
+and detaching resources. It preserves the timestamped artifacts, reports any listener
+that still owns the configured SSH port, and does not terminate unrelated processes.
+The process owner and PID in a `[WARNING]` message can be inspected or stopped
+manually when the listener is outside this harness. Cleanup may require `sudo` for
+mount and loop-device operations. If a test-owned process or listener remains,
+cleanup returns nonzero and retains the artifacts so the next run does not start
+with hidden stale state.
+
 Use `cleanall` only when you also want to delete all saved test results:
 
 ```bash
@@ -313,7 +322,7 @@ The final `poweroff` messages from systemd only mean that a guest was shut down.
 
 - The image is booted using the **generic ARM64 kernel and initramfs** from the prepared cache, not the kernel inside the input image. This provides the QEMU `virt` compatibility needed for the test.
 - SSH keys from the prepared cache are used (injected during `prepare`). The backup image must have been created from a prepared guest or have the same authorized_keys.
-- The test uses the same SSH port (2222 by default) as the A/B test. Only run one test at a time unless you change the port.
+- The A/B test requests SSH port 2222 by default and automatically tries nearby available ports when it is occupied. The backup boot test uses the configured `SSH_PORT`; run only one test at a time when using the same configured port, or change the port in `config.env`.
 - A/B `guest-root.qcow2` artifacts are QEMU-only overlays for validation. They are not physical Raspberry Pi SD-card images and must not be written directly to an SD card.
 
 Do not stop the script merely because the console appears quiet or remains at the serial login prompt. The harness waits for SSH in the background and prints progress every 30 seconds. Stop it only after the configured timeout, an explicit error, or a confirmed hang.

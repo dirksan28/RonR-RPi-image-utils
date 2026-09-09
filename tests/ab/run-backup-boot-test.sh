@@ -1,4 +1,5 @@
 #!/bin/bash
+# Boot a previously created bootable backup image in QEMU and run focused checks.
 #
 # Synopsis:
 #   Usage: run-backup-boot-test.sh {prepare|boot|sanity-check|all} [BACKUP_IMAGE_PATH]
@@ -119,8 +120,11 @@ SCP_ARGS=(-F /dev/null -P "${SSH_PORT}" -i "${SSH_PRIVATE_KEY}" -o IdentitiesOnl
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 LOCAL_ARTIFACT_DIR="${ARTIFACT_DIR}/backup-boot-test${RUN_ID}"
 mkdir -p "${LOCAL_ARTIFACT_DIR}"
+RUN_PID_FILE="${LOCAL_ARTIFACT_DIR}/run-backup-boot-test.pid"
+printf '%s %s\n' "$$" "$(awk '{ print $22 }' "/proc/$$/stat")" > "${RUN_PID_FILE}"
 
 GUEST_PID=""
+GUEST_CONSOLE_LOG=""
 CURRENT_STAGE="initializing"
 
 remote() {
@@ -163,6 +167,7 @@ finish_run() {
     log_message "[INFO] Fail Exitcode: ${exit_code}"
   fi
   log_message "[INFO] Backup boot test artifacts: ${LOCAL_ARTIFACT_DIR}"
+  rm -f "${RUN_PID_FILE}"
   exit "${exit_code}"
 }
 trap finish_run EXIT
@@ -170,7 +175,25 @@ trap finish_run EXIT
 wait_for_ssh() {
   local elapsed=0
   log_message "[INFO] Waiting for SSH on port ${SSH_PORT}..."
-  until remote "true" >/dev/null 2>&1; do
+  while :; do
+    local process_state
+    process_state="$(ps -o stat= -p "${GUEST_PID}" 2>/dev/null | tr -d '[:space:]')" || true
+    if [ -z "${process_state}" ] || [[ "${process_state}" == Z* ]]; then
+      local guest_status=0
+      wait "${GUEST_PID}" || guest_status=$?
+      GUEST_PID=""
+      [ "${guest_status}" -ne 0 ] || guest_status=1
+      echo "QEMU guest exited before SSH became ready (exit ${guest_status})" >&2
+      if [ -f "${GUEST_CONSOLE_LOG}" ]; then
+        echo "Last QEMU console output:" >&2
+        tail -n 20 "${GUEST_CONSOLE_LOG}" >&2
+      fi
+      return "${guest_status}"
+    fi
+    if remote "true" >/dev/null 2>&1; then
+      log_message "[INFO] SSH ready after ${elapsed} seconds"
+      return 0
+    fi
     elapsed=$((elapsed + 2))
     [ "${elapsed}" -le "${SSH_WAIT_SECONDS}" ] || {
       echo "Guest SSH did not become ready within ${SSH_WAIT_SECONDS} seconds" >&2
@@ -178,7 +201,6 @@ wait_for_ssh() {
     }
     sleep 2
   done
-  log_message "[INFO] SSH ready after ${elapsed} seconds"
 }
 
 start_guest() {
@@ -194,7 +216,7 @@ start_guest() {
   backing_file=$(echo "${img_info}" | jq -r '.["backing-filename"] // empty')
   
   local root_overlay="${LOCAL_ARTIFACT_DIR}/guest-root.qcow2"
-  local console_log="${LOCAL_ARTIFACT_DIR}/qemu-console.log"
+  GUEST_CONSOLE_LOG="${LOCAL_ARTIFACT_DIR}/qemu-console.log"
 
   if [ "${img_format}" = "qcow2" ]; then
     if [ -n "${backing_file}" ] && [ "${backing_file}" != "null" ]; then
@@ -219,7 +241,7 @@ start_guest() {
     -kernel "${KERNEL_IMAGE}" -initrd "${INITRAMFS_IMAGE}" -append 'root=/dev/vda2 rw rootwait console=ttyAMA0' \
     -drive "if=none,file=${root_overlay},format=qcow2,id=rootdisk" -device virtio-blk-pci,drive=rootdisk \
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" -device virtio-net-pci,netdev=net0 \
-    -nographic "${QEMU_EXTRA_ARGS[@]}" 2>&1 | tee "${console_log}" &
+    -nographic "${QEMU_EXTRA_ARGS[@]}" > >(tee "${GUEST_CONSOLE_LOG}") 2>&1 &
 
   GUEST_PID=$!
   log_message "[INFO] QEMU guest started with PID ${GUEST_PID}"
@@ -275,6 +297,7 @@ run_sanity_checks() {
 case "${ACTION}" in
   prepare)
     log_message "[INFO] Running run-ab-test.sh prepare..."
+    rm -f "${RUN_PID_FILE}"
     exec bash "${SCRIPT_DIR}/run-ab-test.sh" prepare
     ;;
   boot)

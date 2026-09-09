@@ -23,6 +23,22 @@ Keep changes here focused on the harness, its documentation, and its test artifa
 - Keep verbose command output in phase-specific artifact logs. The terminal and `result.log` should contain concise, useful status messages.
 - Add comments only for intent, safety constraints, or non-obvious control flow. Do not add comments that merely restate shell syntax.
 
+## Language and Generated Artifacts
+
+- Keep harness scripts, generated guest files, fixtures, and other executable artifacts in Bash or another shell-script form consistent with this subtree.
+- Do not add Python, Perl, Node.js, or other non-shell source files or generated artifacts when the task can be implemented in shell.
+- A one-off non-shell command is acceptable for read-only host inspection or validation only when it creates no repository artifact; do not turn it into a checked-in helper or guest file.
+- If a non-shell source or generated artifact is genuinely unavoidable, stop before creating it and prompt the user for explicit approval, explaining why shell is insufficient and what would be added.
+
+## Host Port and Guest Ownership
+
+- In `run-ab-test.sh`, treat `SSH_PORT` as the first requested host port, not as proof that the port is free. Before starting QEMU, check for a listener and select a nearby available port when necessary; record the selected port in `result.log` and use it consistently for QEMU, SSH, and SCP.
+- After launching QEMU, monitor the runner's child process while waiting for SSH. Never accept a successful SSH connection from a stale or unrelated guest after this run's QEMU process has exited.
+- If QEMU exits before SSH becomes ready, return its nonzero status, preserve the QEMU console log, and report the startup failure. Do not continue to guest setup or interpret a later mount error as the root cause.
+- Record the active runner PID and process start time below its artifact directory, remove the record on normal exit, and have cleanup use it to stop active test runners before removing their QEMU processes. Keep a command-line fallback for runs created before PID records existed.
+- Cleanup must terminate only runners whose command line and working directory identify this repository, and only QEMU processes tied to this test workspace, cache, or forwarding port. Do not kill an unrelated listener; report its command and PID so it can be handled manually.
+- Prefer direct child tracking or process substitution for QEMU console capture. Do not hide QEMU behind a `tee` pipeline whose wrapper can survive a failed QEMU startup and leave the orchestrator attached to the wrong process.
+
 ## Generated Guest Files and Candidate Parity
 
 - Treat the body of every heredoc that writes a guest script, configuration file, or image content as generated test data. Its comments and whitespace become part of the artifact and can change manifests even when executable behavior is unchanged.
@@ -43,6 +59,7 @@ Keep changes here focused on the harness, its documentation, and its test artifa
 - Create local configuration with `cp config.example.env config.env`; do not commit machine-specific `config.env` values.
 - Treat generated SSH keys, raw images, QEMU overlays, caches, and timestamped artifacts as sensitive test data. Do not replace the harness's generated test keys with a personal SSH key.
 - Use `cleanup` to remove runtime state while retaining results. Use `cleanall` only when deleting all saved test results is intentional.
+- Cleanup must return nonzero and retain artifacts when a test runner, QEMU process, or configured SSH port remains; this prevents `cleanup && all` from starting over stale runtime state.
 - Preserve partial artifacts after a failure so the failing phase can be diagnosed.
 
 ## Running the Harness
@@ -54,6 +71,7 @@ The supported actions are:
 ./run-ab-test.sh preflight
 ./run-ab-test.sh all
 ./run-ab-test.sh cleanup
+./run-ab-test.sh clean
 ./run-ab-test.sh cleanall
 ```
 

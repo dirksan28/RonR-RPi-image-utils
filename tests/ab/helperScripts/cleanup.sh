@@ -1,12 +1,14 @@
 #!/bin/bash
-# Remove test-owned QEMU, mount, and loop resources while preserving the prepared cache.
+# Stop test-owned runners and QEMU, then remove temporary mounts and loop resources while preserving the prepared cache.
 #
 # Synopsis:
 #   Usage: cleanup.sh CONFIG_FILE [cleanup|clean|cleanall]
 #   Expects the A/B test configuration and an optional cleanup action.
-#   Stops test QEMU processes, unmounts test filesystems, detaches test loops,
-#   and removes artifact results only for the cleanall action.
-#   Returns 0 after cleanup; returns 2 when CONFIG_FILE is missing or invalid.
+#   Stops active or stale test runners and QEMU processes, unmounts test
+#   filesystems, detaches test loops, and removes artifact results only for the
+#   cleanall action.
+#   Returns 0 after successful cleanup; returns 1 when test resources remain;
+#   returns 2 when CONFIG_FILE is missing or invalid.
 #
 #   CONFIG_FILE is a sourced Bash file, for example:
 #     PREPARED_CACHE_DIR="/path/to/tests/ab/cache"
@@ -33,14 +35,49 @@ source "${CONFIG_FILE}"
 CACHE_DIR="${PREPARED_CACHE_DIR:-${PROJECT_DIR}/tests/ab/cache}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-${PROJECT_DIR}/tests/ab/artifacts}"
 SSH_PORT="${SSH_PORT:-2222}"
+CLEANUP_FAILURE=0
 
 log() {
   printf '[cleanup] %s\n' "$*"
 }
 
+port_is_in_use() {
+  local port="$1"
+  (exec 3<>"/dev/tcp/127.0.0.1/${port}") >/dev/null 2>&1
+}
+
+port_holder() {
+  local port="$1"
+  local holder=""
+  local details=""
+  if command -v ss >/dev/null 2>&1; then
+    holder="$(ss -Hlnpt "sport = :${port}" 2>/dev/null | head -n 1 || true)"
+  fi
+  if { [ -z "${holder}" ] || [[ "${holder}" != *"users:("* ]]; } && command -v fuser >/dev/null 2>&1; then
+    details="$(fuser -v "${port}/tcp" 2>&1 | tr '\n' ' ' || true)"
+    [ -n "${details}" ] && holder="${holder}${holder:+; }fuser: ${details}"
+  fi
+  if { [ -z "${holder}" ] || [[ "${holder}" != *"users:("* ]]; } && command -v lsof >/dev/null 2>&1; then
+    details="$(lsof -nP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null | tail -n +2 | tr '\n' ' ' || true)"
+    [ -n "${details}" ] && holder="${holder}${holder:+; }lsof: ${details}"
+  fi
+  [ -n "${holder}" ] || holder="unknown process (port inspection tools returned no owner)"
+  printf '%s' "${holder}"
+}
+
+report_ssh_port() {
+  if port_is_in_use "${SSH_PORT}"; then
+    log "[WARNING] SSH port ${SSH_PORT} is still held by: $(port_holder "${SSH_PORT}")"
+    CLEANUP_FAILURE=1
+  else
+    log "[INFO] SSH port ${SSH_PORT} is free"
+  fi
+}
+
 # Track resources once; later cleanup steps can safely be called on repeated runs.
 declare -a TEST_LOOPS=()
 declare -a MOUNT_TARGETS=()
+declare -a TEST_RUNNERS=()
 
 contains_item() {
   local wanted="$1"
@@ -64,23 +101,134 @@ add_mount_target() {
   contains_item "${target}" "${MOUNT_TARGETS[@]}" || MOUNT_TARGETS+=("${target}")
 }
 
+add_runner() {
+  local pid="$1"
+  [ -n "${pid}" ] || return 0
+  contains_item "${pid}" "${TEST_RUNNERS[@]}" || TEST_RUNNERS+=("${pid}")
+}
+
+signal_process() {
+  local signal="$1"
+  local pid="$2"
+  kill "-${signal}" "${pid}" 2>/dev/null || sudo -n kill "-${signal}" "${pid}" 2>/dev/null
+}
+
+runner_is_test_owned() {
+  local pid="$1"
+  local cmdline
+  local cwd
+  [ -d "/proc/${pid}" ] || return 1
+  cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
+  cwd="$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)"
+  [ "${cwd}" = "${PROJECT_DIR}" ] || return 1
+  case "${cmdline}" in
+    *run-ab-test.sh*|*run-backup-boot-test.sh*) return 0 ;;
+  esac
+  return 1
+}
+
+collect_test_runners() {
+  local pid_file pid expected_start actual_start
+
+  # PID records make cleanup precise and also protect against PID reuse.
+  while read -r pid_file; do
+    [ -f "${pid_file}" ] || continue
+    pid=""
+    expected_start=""
+    read -r pid expected_start < "${pid_file}" || true
+    if [[ "${pid:-}" =~ ^[0-9]+$ ]] && runner_is_test_owned "${pid}"; then
+      if [ -n "${expected_start:-}" ]; then
+        actual_start="$(awk '{ print $22 }' "/proc/${pid}/stat" 2>/dev/null || true)"
+        [ "${actual_start}" = "${expected_start}" ] || continue
+      fi
+      add_runner "${pid}"
+    else
+      rm -f "${pid_file}"
+    fi
+  done < <(find "${ARTIFACT_DIR}" -type f -name 'run-*.pid' -print 2>/dev/null || true)
+
+  # Also find runs created before PID records were introduced.
+  while read -r pid; do
+    runner_is_test_owned "${pid}" && add_runner "${pid}"
+  done < <(pgrep -f 'run-(ab-test|backup-boot-test)\.sh' 2>/dev/null || true)
+}
+
+stop_test_runners() {
+  local pid cmdline attempt still_running
+  collect_test_runners
+  for pid in "${TEST_RUNNERS[@]}"; do
+    [ -d "/proc/${pid}" ] || continue
+    cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
+    log "Stopping test runner ${pid}: ${cmdline}"
+    if ! signal_process TERM "${pid}"; then
+      CLEANUP_FAILURE=1
+      log "[WARNING] Could not send TERM to test runner ${pid}"
+    fi
+  done
+
+  for attempt in 1 2 3 4 5; do
+    still_running=0
+    for pid in "${TEST_RUNNERS[@]}"; do
+      if kill -0 "${pid}" 2>/dev/null; then
+        still_running=1
+        break
+      fi
+    done
+    [ "${still_running}" -eq 0 ] && return 0
+    sleep 1
+  done
+
+  for pid in "${TEST_RUNNERS[@]}"; do
+    if kill -0 "${pid}" 2>/dev/null; then
+      log "Force-stopping test runner ${pid}"
+      if ! signal_process KILL "${pid}"; then
+        CLEANUP_FAILURE=1
+        log "[WARNING] Could not send KILL to test runner ${pid}"
+      fi
+    fi
+  done
+  for pid in "${TEST_RUNNERS[@]}"; do
+    if kill -0 "${pid}" 2>/dev/null; then
+      CLEANUP_FAILURE=1
+      log "[WARNING] Test runner ${pid} remains after cleanup"
+    fi
+  done
+}
+
+test_qemu_pid() {
+  local pid="$1"
+  local cmdline
+  [ -d "/proc/${pid}" ] || return 1
+  cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
+  case "${cmdline}" in
+    *qemu-system-aarch64*)
+      case "${cmdline}" in
+        *"${PROJECT_DIR}"*|*"${CACHE_DIR}"*|*"hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"*) return 0 ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
+test_qemu_pids() {
+  local pid
+  while read -r pid; do
+    test_qemu_pid "${pid}" && printf '%s\n' "${pid}"
+  done < <(pgrep -x qemu-system-aarch64 2>/dev/null || true)
+}
+
 stop_test_qemu() {
   local pid cmdline
   # Terminate only QEMU processes that can be tied to this test workspace or port.
   while read -r pid; do
     [ -d "/proc/${pid}" ] || continue
     cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
-    case "${cmdline}" in
-      *qemu-system-aarch64*)
-        case "${cmdline}" in
-          *"${PROJECT_DIR}"*|*"${CACHE_DIR}"*|*"hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"*)
-            log "Stopping QEMU process ${pid}"
-            sudo kill -TERM "${pid}" 2>/dev/null || true
-            ;;
-        esac
-        ;;
-    esac
-  done < <(pgrep -x qemu-system-aarch64 2>/dev/null || true)
+    log "Stopping QEMU process ${pid}: ${cmdline}"
+    if ! signal_process TERM "${pid}"; then
+      CLEANUP_FAILURE=1
+      log "[WARNING] Could not send TERM to QEMU process ${pid}"
+    fi
+  done < <(test_qemu_pids)
 
   # Give a terminated guest a short grace period before checking for leftovers.
   local attempt
@@ -91,22 +239,25 @@ stop_test_qemu() {
         still_running=1
         break
       fi
-    done < <(pgrep -x qemu-system-aarch64 2>/dev/null || true)
+    done < <(test_qemu_pids)
     [ "${still_running}" -eq 0 ] && return 0
     sleep 1
   done
 
   # A stuck guest can retain mounts, so force-stop only the same identified processes.
   while read -r pid; do
-    [ -d "/proc/${pid}" ] || continue
+    kill -0 "${pid}" 2>/dev/null || continue
     cmdline="$(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
-    case "${cmdline}" in
-      *"${PROJECT_DIR}"*|*"${CACHE_DIR}"*|*"hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22"*)
-        log "Force-stopping QEMU process ${pid}"
-        sudo kill -KILL "${pid}" 2>/dev/null || true
-        ;;
-    esac
-  done < <(pgrep -x qemu-system-aarch64 2>/dev/null || true)
+    log "Force-stopping QEMU process ${pid}: ${cmdline}"
+    if ! signal_process KILL "${pid}"; then
+      CLEANUP_FAILURE=1
+      log "[WARNING] Could not send KILL to QEMU process ${pid}"
+    fi
+  done < <(test_qemu_pids)
+  while read -r pid; do
+    CLEANUP_FAILURE=1
+    log "[WARNING] QEMU process ${pid} remains after cleanup"
+  done < <(test_qemu_pids)
 }
 
 collect_test_loops() {
@@ -189,10 +340,17 @@ clear_artifacts() {
 
 # Cleanup order matters: stop guests before discovering and detaching their resources.
 log "Preserving cache: ${CACHE_DIR}"
+stop_test_runners
 stop_test_qemu
+report_ssh_port
 collect_test_loops
 collect_mounts
 unmount_test_mounts
 detach_test_loops
-clear_artifacts
-log "Cleanup complete; cache was not modified"
+if [ "${CLEANUP_FAILURE}" -eq 0 ]; then
+  clear_artifacts
+  log "Cleanup complete; cache was not modified"
+else
+  log "[WARNING] Cleanup could not release all test resources; retained artifacts were not removed"
+  exit 1
+fi
