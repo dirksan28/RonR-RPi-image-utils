@@ -587,3 +587,16 @@ Two documentation files in `agentic-context/` support AI-assisted maintenance an
 **Content focus:**
 - `agentic-context/plan-qemuImageBackupAbTest.prompt.md` — "What the test does and why" (fixtures, QEMU setup, manifest generation, comparison logic)
 - `agentic-context/HANDOVER.md` — "What was broken, what's fixed, how to resume" (boot copy fix, var/tmp exclusion, runtime normalization patterns, passing artifacts)
+
+---
+
+#### AGENTS.md Files
+
+Two instruction files define how AI agents should work with this codebase:
+
+| File | Scope | Purpose |
+|------|-------|---------|
+| `AGENTS.md` (repository root) | Root-level `image-*` utilities (`image-backup`, `image-check`, `image-chroot`, etc.) | Header comment format, synopsis, inline docs, README updates, Bash-only, validation requirements |
+| `tests/ab/AGENTS.md` | A/B test harness in `tests/ab/` | Harness architecture, host/guest ownership, generated file parity, documentation triggers, cleanup contracts |
+
+When working on root-level `image-*` scripts, follow the root `AGENTS.md`. When working on the A/B test harness in `tests/ab/`, follow `tests/ab/AGENTS.md`.
