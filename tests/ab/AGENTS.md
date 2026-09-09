@@ -23,6 +23,13 @@ Keep changes here focused on the harness, its documentation, and its test artifa
 - Keep verbose command output in phase-specific artifact logs. The terminal and `result.log` should contain concise, useful status messages.
 - Add comments only for intent, safety constraints, or non-obvious control flow. Do not add comments that merely restate shell syntax.
 
+## Generated Guest Files and Candidate Parity
+
+- Treat the body of every heredoc that writes a guest script, configuration file, or image content as generated test data. Its comments and whitespace become part of the artifact and can change manifests even when executable behavior is unchanged.
+- Keep explanatory comments about generated helpers outside their heredocs unless the comments are intentionally part of the generated file. This preserves the distinction between documenting the generator and changing the guest artifact.
+- When the local candidate is expected to match the pinned upstream candidate, preserve byte-for-byte parity for generated helpers and other deterministic files unless a behavior change is intentional and documented.
+- Do not hide an unexpected generated-file difference by adding a broad comparison exclusion. First identify whether the difference comes from the generator, the fixture, or the comparison normalization.
+
 ## Documentation and Comments
 
 - For a major behavior, interface, or workflow change, check the applicable README before editing and update it when the documented user-facing contract is no longer accurate. For this subtree, start with `tests/ab/README.md`; inspect the repository-root `README.md` when the change affects repository-wide usage.
@@ -110,3 +117,16 @@ git diff --check
 ```
 
 Use `prepare` or `preflight` for focused executable validation when the configured host dependencies and cache are available. Run `all` only when the full A/B comparison is required; record its artifact directory and final exit status. Do not claim a full runtime test passed when only syntax or documentation checks were run.
+
+When changing a generator such as `image-backup`, compare the generated helper body with the pinned upstream source before starting a long run. From the repository root, the current resize-helper check is:
+
+```bash
+local_helper=$(mktemp)
+upstream_helper=$(mktemp)
+trap 'rm -f "${local_helper}" "${upstream_helper}"' EXIT
+sed -n '/cat <<\\EOF1 > .*resize-root-fs/,/^EOF1$/p' image-backup | sed '1d;$d' > "${local_helper}"
+sed -n '/cat <<\\EOF1 > .*resize-root-fs/,/^EOF1$/p' tests/ab/cache/upstream-repo/image-backup | sed '1d;$d' > "${upstream_helper}"
+diff -u "${upstream_helper}" "${local_helper}"
+```
+
+An empty diff is expected when the generated helper is not intentionally changed. If the pinned upstream cache is unavailable, perform the equivalent comparison against the generated helper in a retained A/B artifact or document why the parity check could not be run.
