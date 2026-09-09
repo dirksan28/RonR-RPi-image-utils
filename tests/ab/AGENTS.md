@@ -48,9 +48,9 @@ Keep changes here focused on the harness, its documentation, and its test artifa
 
 ## Documentation and Comments
 
-- For a major behavior, interface, or workflow change, check the applicable README before editing and update it when the documented user-facing contract is no longer accurate. For this subtree, start with `tests/ab/README.md`; inspect the repository-root `README.md` when the change affects repository-wide usage.
+- Treat a change as documentation-triggering when it changes a command or option, default, user-visible behavior, safety or privilege requirement, process/lifecycle handling, port ownership, artifact or logging contract, generated guest output, comparison behavior, or supported workflow. For those changes, check the applicable README before editing and update its owning section when the documented contract is no longer accurate. For this subtree, start with `tests/ab/README.md`; inspect the repository-root `README.md` when the change affects repository-wide usage.
 - Review the nearby inline comments in every changed script. Update or add comments when the change affects intent, safety, or non-obvious control flow; do not add narration for self-explanatory code.
-- Do not modify existing documentation for an internal refactor, a test-only adjustment, or a bug fix that does not change the documented behavior. Documentation changes should be necessary, not automatic.
+- An internal refactor, test-only adjustment, or bug fix that does not change the documented behavior does not require a README change, but its nearby comments and instructions must still be reviewed for accuracy. Documentation changes should be necessary, not automatic.
 - Keep the human-facing README coherent and consolidated. Prefer updating the existing section that owns the topic over adding a new fragment, and do not duplicate guidance that already exists elsewhere.
 
 ## Configuration and Safety
@@ -60,6 +60,7 @@ Keep changes here focused on the harness, its documentation, and its test artifa
 - Treat generated SSH keys, raw images, QEMU overlays, caches, and timestamped artifacts as sensitive test data. Do not replace the harness's generated test keys with a personal SSH key.
 - Use `cleanup` to remove runtime state while retaining results. Use `cleanall` only when deleting all saved test results is intentional.
 - Cleanup must return nonzero and retain artifacts when a test runner, QEMU process, or configured SSH port remains; this prevents `cleanup && all` from starting over stale runtime state.
+- Cleanup discovery must not require root. Only attempt privileged unmount or loop-detach operations after matching test-owned resources are found, use `sudo -n`, and report a warning plus nonzero status when root access is unavailable rather than prompting.
 - Preserve partial artifacts after a failure so the failing phase can be diagnosed.
 
 ## Running the Harness

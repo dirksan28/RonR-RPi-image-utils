@@ -7,6 +7,8 @@
 #   Stops active or stale test runners and QEMU processes, unmounts test
 #   filesystems, detaches test loops, and removes artifact results only for the
 #   cleanall action.
+#   Process, port, mount, and loop discovery is attempted without root. Privileged
+#   cleanup uses non-interactive sudo only after test-owned resources are found.
 #   Returns 0 after successful cleanup; returns 1 when test resources remain;
 #   returns 2 when CONFIG_FILE is missing or invalid.
 #
@@ -36,6 +38,8 @@ CACHE_DIR="${PREPARED_CACHE_DIR:-${PROJECT_DIR}/tests/ab/cache}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-${PROJECT_DIR}/tests/ab/artifacts}"
 SSH_PORT="${SSH_PORT:-2222}"
 CLEANUP_FAILURE=0
+PRIVILEGED_CHECKED=0
+PRIVILEGED_AVAILABLE=0
 
 log() {
   printf '[cleanup] %s\n' "$*"
@@ -111,6 +115,29 @@ signal_process() {
   local signal="$1"
   local pid="$2"
   kill "-${signal}" "${pid}" 2>/dev/null || sudo -n kill "-${signal}" "${pid}" 2>/dev/null
+}
+
+ensure_privileged_cleanup() {
+  if [ "${PRIVILEGED_CHECKED}" -eq 1 ]; then
+    [ "${PRIVILEGED_AVAILABLE}" -eq 1 ]
+    return
+  fi
+  PRIVILEGED_CHECKED=1
+  if [ "${EUID}" -eq 0 ] || { command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; }; then
+    PRIVILEGED_AVAILABLE=1
+    return 0
+  fi
+  CLEANUP_FAILURE=1
+  log "[WARNING] Root access is required to clean test mounts or loop devices, but non-interactive sudo is unavailable"
+  return 1
+}
+
+run_privileged() {
+  if [ "${EUID}" -eq 0 ]; then
+    "$@"
+  else
+    sudo -n "$@"
+  fi
 }
 
 runner_is_test_owned() {
@@ -270,7 +297,7 @@ collect_test_loops() {
         add_loop "${loop}"
         ;;
     esac
-  done < <(sudo losetup --list --noheadings --output NAME,BACK-FILE 2>/dev/null || true)
+  done < <(losetup --list --noheadings --output NAME,BACK-FILE 2>/dev/null || true)
 }
 
 collect_mounts() {
@@ -282,40 +309,50 @@ collect_mounts() {
         add_mount_target "${target}"
         ;;
     esac
-  done < <(sudo findmnt -rn -o TARGET,SOURCE 2>/dev/null || true)
+  done < <(findmnt -rn -o TARGET,SOURCE 2>/dev/null || true)
 
   for loop in "${TEST_LOOPS[@]}"; do
     for partition in "${loop}" "${loop}p1" "${loop}p2"; do
       while read -r target; do
         add_mount_target "${target}"
-      done < <(sudo findmnt -rn -S "${partition}" -o TARGET 2>/dev/null || true)
+      done < <(findmnt -rn -S "${partition}" -o TARGET 2>/dev/null || true)
     done
   done
 }
 
 unmount_test_mounts() {
   local target
+  [ "${#MOUNT_TARGETS[@]}" -gt 0 ] || return 0
+  ensure_privileged_cleanup || return 0
   # Unmount deepest paths first so nested mounts do not block their parents.
   while read -r target; do
     [ -n "${target}" ] || continue
     log "Unmounting ${target}"
-    sudo umount --recursive "${target}" 2>/dev/null || \
-      sudo umount --lazy "${target}" 2>/dev/null || true
+    run_privileged umount --recursive "${target}" 2>/dev/null || \
+      run_privileged umount --lazy "${target}" 2>/dev/null || {
+        CLEANUP_FAILURE=1
+        log "[WARNING] Could not unmount ${target}"
+      }
   done < <(printf '%s\n' "${MOUNT_TARGETS[@]}" | awk '{ print length($0) "\t" $0 }' | sort -rn | cut -f2-)
 }
 
 detach_test_loops() {
   local loop
+  [ "${#TEST_LOOPS[@]}" -gt 0 ] || return 0
+  ensure_privileged_cleanup || return 0
   # Detach loops after mounts are gone, then wait for udev to finish device cleanup.
   for loop in "${TEST_LOOPS[@]}"; do
     log "Detaching ${loop}"
-    sudo losetup --detach "${loop}" 2>/dev/null || true
+    if ! run_privileged losetup --detach "${loop}" 2>/dev/null; then
+      CLEANUP_FAILURE=1
+      log "[WARNING] Could not detach ${loop}"
+    fi
   done
   if command -v udevadm >/dev/null 2>&1; then
-    sudo udevadm settle 2>/dev/null || true
+    run_privileged udevadm settle 2>/dev/null || true
   fi
   for loop in "${TEST_LOOPS[@]}"; do
-    if sudo losetup "${loop}" >/dev/null 2>&1; then
+    if losetup "${loop}" >/dev/null 2>&1; then
       log "Loop device still marked autoclear; no mount remains: ${loop}"
     fi
   done

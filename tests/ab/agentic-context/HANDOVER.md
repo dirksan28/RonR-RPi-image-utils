@@ -1,6 +1,6 @@
 # Handover: image-backup A/B and Backup Boot Tests
 
-**Date:** 2026-09-08  
+**Date:** 2026-09-09  
 **Project:** RonR-RPi-image-utils  
 **Workspace:** `/home/schm/vspython/RonR-RPi-image-utils`
 
@@ -8,12 +8,21 @@ This document records the current implementation and the latest validated test s
 
 ## Current Status
 
-The current test state is passing:
+The last known passing full A/B baseline is `tests/ab/artifacts/testresult20260908T083231Z/`.
+The latest follow-up run is not passing: `testresult20260909T102629Z` reached the
+local initial phase, then failed with exit `255` before comparison. That failure is
+separate from the QEMU port/lifecycle issue and remains to be diagnosed; do not
+report the current A/B state as passing.
 
-- A/B test: initial and incremental comparisons pass.
-- Backup Boot Test: QEMU boot and all sanity checks pass.
-- Prepared guest cache: reusable without entering the guest chroot or running APT when the cache manifest matches.
-- Inspection: parallel hash-cache corruption fix is validated on a real image and in the full A/B run.
+The prepared guest cache remains reusable when its manifest matches, and the
+inspection/hash-cache changes remain covered by the passing baseline. The later
+port-fallback preflight `testresult20260909T101442Z` passed with exit `0` while
+`2222` was deliberately occupied; it identified the listener, selected `2223`,
+and completed the guest validation.
+
+The worktree has not been committed. No test runner, QEMU process, or forwarding
+listener is currently active. A stale test-owned `/dev/loop46` backed by the
+deleted prepared image remains; detaching it requires root access.
 
 ## Latest Validated Runs
 
@@ -104,7 +113,8 @@ Kernel: 6.12.38+deb13-arm64
 Machine: virt
 Memory: 2048 MB
 CPUs: 2
-SSH port: 2222
+First requested SSH port: 2222; `run-ab-test.sh` selects a nearby available port
+and records the owner when the requested port is busy.
 Backup disk: 8 GB
 ```
 
@@ -126,6 +136,22 @@ The prepared cache is described by `tests/ab/cache/prepared.manifest`. The curre
 The first preparation or an invalidated rebuild needs network access for the pinned downloads and guest package installation. A matching cache is reused before the guest chroot is entered; it does not run `apt-get update` or `apt-get install`.
 
 The pinned image and kernel are configured in `tests/ab/config.env`, which is ignored by Git. Do not commit private keys, cache files, generated images, or test artifacts.
+
+## Process Lifecycle and Cleanup
+
+The A/B and backup-boot entrypoints record their PID and process start time below
+their artifact directory. QEMU console capture uses process substitution so the
+runner tracks QEMU directly instead of a surviving `tee` pipeline wrapper.
+
+`run-ab-test.sh cleanup`, `clean`, and `cleanall` first stop repository-owned test
+runners and QEMU processes, then inspect the configured SSH port. Process, port,
+mount, and loop discovery is unprivileged. Unmounting and loop detachment use
+non-interactive `sudo -n` only after matching test-owned resources are found. If
+root access is unavailable, cleanup warns, returns nonzero, and retains artifacts;
+it does not prompt for a password or continue into a new test run.
+
+An occupied port outside this harness is reported with the process/PID and is not
+terminated automatically.
 
 ## Inspection Optimization
 
@@ -171,6 +197,10 @@ Run commands from `tests/ab` unless an absolute path is shown:
 
 # Stop test QEMU state while preserving cache and saved results.
 ./run-ab-test.sh cleanup
+
+# `clean` is an alias for cleanup; `cleanall` also removes saved result directories.
+./run-ab-test.sh clean
+./run-ab-test.sh cleanall
 ```
 
 For a manual comparison of an existing complete A/B result:
@@ -206,6 +236,12 @@ cat artifacts/backup-boot-test<UTC>/result.log
 cat artifacts/backup-boot-test<UTC>/sanity.log
 ```
 
+For a port or stale-process failure, inspect the relevant `qemu-console.log` and
+`result.log`. A QEMU bind failure must be treated as the root cause; do not use a
+later guest mount error as the diagnosis. If cleanup reports a test-owned loop or
+mount but non-interactive sudo is unavailable, authenticate in the host terminal
+before rerunning cleanup.
+
 Systemd `poweroff` lines and serial-console cursor sequences are not test results. The meaningful result is the final timestamped `[PASS]` or `[FAIL]` message and the command exit code.
 
 If a comparison exposes a new runtime-only difference, update the patterns in `helperScripts/compare-results.sh`. Do not modify the pinned upstream candidate or the fixture behavior to hide a functional difference.
@@ -227,16 +263,21 @@ If a comparison exposes a new runtime-only difference, update the patterns in `h
 
 ## Validation Summary
 
-The following checks were completed on 2026-09-08:
+The following checks were completed on 2026-09-09:
 
 ```text
 bash -n on both root entrypoints and all six helper scripts: PASS
 git diff --check: PASS
-run-ab-test.sh prepare from repository root: PASS
-run-ab-test.sh prepare from tests/ab: PASS
-run-ab-test.sh all: PASS
-run-backup-boot-test.sh prepare: PASS
-run-backup-boot-test.sh all: PASS
+run-ab-test.sh prepare from repository root: PASS (previous baseline)
+run-ab-test.sh prepare from tests/ab: PASS (previous baseline)
+run-ab-test.sh all: PASS in testresult20260908T083231Z (previous baseline)
+run-ab-test.sh preflight with port 2222 occupied: PASS in testresult20260909T101442Z
+run-ab-test.sh cleanup without cached sudo: no prompt; nonzero because /dev/loop46 requires root
+run-ab-test.sh all in testresult20260909T102629Z: FAIL, local initial phase exit 255
+run-backup-boot-test.sh prepare: PASS (previous baseline)
+run-backup-boot-test.sh all: PASS (previous baseline)
 ```
 
-No full test run is currently pending. No Git commit has been created.
+No full test run is currently pending. The failed `testresult20260909T102629Z`
+run requires diagnosis before another long run is reported as successful. No Git
+commit has been created.

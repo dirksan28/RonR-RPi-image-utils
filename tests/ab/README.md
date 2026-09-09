@@ -89,9 +89,11 @@ and detaching resources. It preserves the timestamped artifacts, reports any lis
 that still owns the configured SSH port, and does not terminate unrelated processes.
 The process owner and PID in a `[WARNING]` message can be inspected or stopped
 manually when the listener is outside this harness. Cleanup may require `sudo` for
-mount and loop-device operations. If a test-owned process or listener remains,
-cleanup returns nonzero and retains the artifacts so the next run does not start
-with hidden stale state.
+mount and loop-device operations. Process, port, mount, and loop discovery does
+not require root. Privileged cleanup uses non-interactive `sudo -n` only when a
+test-owned mount or loop is actually found; if root access is unavailable,
+cleanup warns, returns nonzero, and retains the artifacts so the next run does
+not start with hidden stale state.
 
 Use `cleanall` only when you also want to delete all saved test results:
 
