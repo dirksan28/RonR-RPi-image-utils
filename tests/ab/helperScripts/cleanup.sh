@@ -128,7 +128,7 @@ ensure_privileged_cleanup() {
     return 0
   fi
   CLEANUP_FAILURE=1
-  log "[WARNING] Root access is required to clean test mounts or loop devices, but non-interactive sudo is unavailable"
+  log "[WARNING] Root access is required to clean test mounts or loop devices, but non-interactive sudo is unavailable. Run 'sudo -v' in this terminal, then retry './run-ab-test.sh cleanall'. Do not run the full A/B test with sudo."
   return 1
 }
 

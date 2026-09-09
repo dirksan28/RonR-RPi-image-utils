@@ -95,6 +95,17 @@ test-owned mount or loop is actually found; if root access is unavailable,
 cleanup warns, returns nonzero, and retains the artifacts so the next run does
 not start with hidden stale state.
 
+If cleanup reports that non-interactive sudo is unavailable, authenticate in the
+same terminal and retry the cleanup command:
+
+```bash
+sudo -v
+./run-ab-test.sh cleanall
+```
+
+Do not run the full A/B test with `sudo`; run `./run-ab-test.sh all` as the
+normal user so generated artifacts are not owned by root.
+
 Use `cleanall` only when you also want to delete all saved test results:
 
 ```bash
