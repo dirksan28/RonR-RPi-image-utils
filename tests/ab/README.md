@@ -181,7 +181,7 @@ A failed run ends with a visible diagnostic, for example:
 [2026-09-04T10:05:12Z] [INFO] A/B artifacts: /home/.../tests/ab/artifacts/testresult<UTC timestamp>
 ```
 
-The final `poweroff` messages from systemd only mean that a guest was shut down. They are not a test result. Terminal sequences such as `;1R` may appear after QEMU exits; they are harmless serial-console cursor-position control codes.
+The final `poweroff` messages from systemd only mean that a guest was shut down. They are not a test result. Raw serial output is retained in `qemu-console.log`; ANSI CSI controls are stripped from the live display so cursor-position responses such as `;1R` do not leak into the shell prompt after QEMU exits.
 
 ## Runtime Expectations
 

@@ -235,13 +235,14 @@ start_guest() {
     qemu-img create -f qcow2 -F raw -b "${BACKUP_IMAGE}" "${root_overlay}" >/dev/null
   fi
 
-  # Start QEMU in background
+  # Keep raw console output in the artifact while stripping CSI controls from
+  # the live display so terminal cursor responses cannot leak into the prompt.
   qemu-system-aarch64 \
     -M "${QEMU_MACHINE}" -cpu max,pauth=off -m "${QEMU_MEMORY_MB}" -smp "${QEMU_CPUS}" \
     -kernel "${KERNEL_IMAGE}" -initrd "${INITRAMFS_IMAGE}" -append 'root=/dev/vda2 rw rootwait console=ttyAMA0' \
     -drive "if=none,file=${root_overlay},format=qcow2,id=rootdisk" -device virtio-blk-pci,drive=rootdisk \
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" -device virtio-net-pci,netdev=net0 \
-    -nographic "${QEMU_EXTRA_ARGS[@]}" > >(tee "${GUEST_CONSOLE_LOG}") 2>&1 &
+    -nographic "${QEMU_EXTRA_ARGS[@]}" > >(tee "${GUEST_CONSOLE_LOG}" | sed -u -E $'s/\x1b\\[[^[:alpha:]]*[[:alpha:]]//g') 2>&1 &
 
   GUEST_PID=$!
   log_message "[INFO] QEMU guest started with PID ${GUEST_PID}"

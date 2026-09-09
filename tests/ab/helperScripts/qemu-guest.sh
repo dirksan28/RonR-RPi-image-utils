@@ -28,11 +28,13 @@ CONSOLE_LOG="${OUTPUT_DIR}/qemu-console.log"
 qemu-img create -f qcow2 -F raw -b "${BASE_IMAGE}" "${ROOT_OVERLAY}" >/dev/null
 qemu-img create -f raw "${BACKUP_DISK}" "${DISK_GB}G" >/dev/null
 
-# Process substitution keeps QEMU as the tracked child while tee still records console output.
+# Process substitution keeps QEMU as the tracked child while tee records the raw
+# console output. Strip CSI controls only from the live display so cursor queries
+# cannot leave terminal responses in the shell input after QEMU exits.
 exec qemu-system-aarch64 \
   -M "${MACHINE}" -cpu max,pauth=off -m "${MEMORY_MB}" -smp "${CPUS}" \
   -kernel "${KERNEL_IMAGE}" -initrd "${INITRAMFS_IMAGE}" -append 'root=/dev/vda2 rw rootwait console=ttyAMA0' \
   -drive "if=none,file=${ROOT_OVERLAY},format=qcow2,id=rootdisk" -device virtio-blk-pci,drive=rootdisk \
   -drive "if=none,file=${BACKUP_DISK},format=raw,id=backupdisk" -device virtio-blk-pci,drive=backupdisk \
   -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:${SSH_PORT}-:22" -device virtio-net-pci,netdev=net0 \
-  -nographic "$@" > >(tee "${CONSOLE_LOG}") 2>&1
+  -nographic "$@" > >(tee "${CONSOLE_LOG}" | sed -u -E $'s/\x1b\\[[^[:alpha:]]*[[:alpha:]]//g') 2>&1
