@@ -454,7 +454,8 @@ path    type    perms    owner    group    size    target    hash
 - **type**: `regular file`, `directory`, `symbolic link`, etc.
 - **perms**: octal permissions (e.g., `644`, `755`)
 - **owner/group**: user and group names
-- **size**: file size in bytes (for directories, block size)
+- **size**: file size in bytes; directory sizes are normalized because their
+   filesystem block allocation can vary with copy order
 - **target**: symlink target (empty for non-symlinks)
 - **hash**: SHA-256 checksum (empty for non-regular files)
 
@@ -464,6 +465,10 @@ Before comparing, both manifests are normalized to filter out differences that a
 
 1. **Test fixture exclusion**: Removes entries under `opt/image-backup-ab-fixtures/bind-target/` and `opt/image-backup-ab-fixtures/external-link` (these are intentional test artifacts that differ by design).
 2. **Runtime exclusion**: Filters lines matching `RUNTIME_EXCLUDE_PATTERNS` (see below).
+3. **Directory allocation normalization**: Replaces the manifest size field for
+   `directory` entries with a neutral value. Directory `st_size` reports allocated
+   filesystem blocks, which can differ between equivalent copies without any
+   content, permission, ownership, or child-entry difference.
 
 The filtered manifests are then compared with `diff -u`. A pass means zero diff output.
 

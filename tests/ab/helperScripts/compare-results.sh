@@ -134,11 +134,13 @@ normalize_manifest() {
   local input_file="$1"
   local output_file="$2"
   # Root manifests also omit fixture paths that intentionally point outside the image.
-  # Exclude test fixtures AND runtime-changing files
+  # Exclude test fixtures and runtime-changing files. Directory st_size values
+  # depend on filesystem block allocation and copy order, not directory content.
   # Manifest format: path<spaces>type<spaces>perms<spaces>owner<spaces>group<spaces>size<spaces>target<spaces>hash
   # Fixture paths: opt/image-backup-ab-fixtures/bind-target/... and opt/image-backup-ab-fixtures/external-link...
   grep -Ev "^opt/image-backup-ab-fixtures/(bind-target|external-link)(/|[[:space:]]|$)" "${input_file}" | \
-  grep -Ev "${RUNTIME_EXCLUDE_PATTERN}" > "${output_file}"
+  grep -Ev "${RUNTIME_EXCLUDE_PATTERN}" | \
+  awk -F '\t' 'BEGIN { OFS = "\t" } $2 == "directory" { $6 = "-" } { print }' > "${output_file}"
 }
 
 compare_file() {
@@ -170,9 +172,12 @@ compare_boot_manifests() {
    local_manifest="$(mktemp)"
    trap "rm -f \"${upstream_manifest}\" \"${local_manifest}\"" EXIT
 
-   # For boot manifest, only exclude runtime-changing files (no test fixtures on boot)
-   grep -Ev "${RUNTIME_EXCLUDE_PATTERN}" "${UPSTREAM_DIR}/boot.manifest" > "${upstream_manifest}"
-   grep -Ev "${RUNTIME_EXCLUDE_PATTERN}" "${LOCAL_DIR}/boot.manifest" > "${local_manifest}"
+   # For boot manifest, only exclude runtime-changing files (no test fixtures on boot).
+   # Normalize directory allocation sizes for the same reason as root manifests.
+   grep -Ev "${RUNTIME_EXCLUDE_PATTERN}" "${UPSTREAM_DIR}/boot.manifest" | \
+     awk -F '\t' 'BEGIN { OFS = "\t" } $2 == "directory" { $6 = "-" } { print }' > "${upstream_manifest}"
+   grep -Ev "${RUNTIME_EXCLUDE_PATTERN}" "${LOCAL_DIR}/boot.manifest" | \
+     awk -F '\t' 'BEGIN { OFS = "\t" } $2 == "directory" { $6 = "-" } { print }' > "${local_manifest}"
    if ! diff -u "${upstream_manifest}" "${local_manifest}"; then
      status=1
    fi

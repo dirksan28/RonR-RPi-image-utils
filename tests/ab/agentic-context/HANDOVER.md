@@ -9,10 +9,13 @@ This document records the current implementation and the latest validated test s
 ## Current Status
 
 The last known passing full A/B baseline is `tests/ab/artifacts/testresult20260908T083231Z/`.
-The latest follow-up run is not passing: `testresult20260909T102629Z` reached the
-local initial phase, then failed with exit `255` before comparison. That failure is
-separate from the QEMU port/lifecycle issue and remains to be diagnosed; do not
-report the current A/B state as passing.
+The latest follow-up run `testresult20260909T110258Z` completed both candidates,
+but its original comparisons failed because directory allocation sizes were
+compared literally. The comparator now normalizes directory sizes; rerunning
+both comparison commands on that artifact passes with exit `0` and no output.
+The full A/B flow has not yet been rerun with the fix, so do not report a new
+full-run pass yet. An earlier run, `testresult20260909T102629Z`, failed during
+the local initial phase with exit `255` and is a separate unresolved failure.
 
 The prepared guest cache remains reusable when its manifest matches, and the
 inspection/hash-cache changes remain covered by the passing baseline. The later
@@ -274,6 +277,8 @@ run-ab-test.sh all: PASS in testresult20260908T083231Z (previous baseline)
 run-ab-test.sh preflight with port 2222 occupied: PASS in testresult20260909T101442Z
 run-ab-test.sh cleanup without cached sudo: no prompt; nonzero because /dev/loop46 requires root
 run-ab-test.sh all in testresult20260909T102629Z: FAIL, local initial phase exit 255
+run-ab-test.sh all in testresult20260909T110258Z: FAIL, comparisons before directory-size fix
+manual initial and incremental comparison on testresult20260909T110258Z: PASS after directory-size normalization
 run-backup-boot-test.sh prepare: PASS (previous baseline)
 run-backup-boot-test.sh all: PASS (previous baseline)
 ```
